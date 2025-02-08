@@ -5,8 +5,24 @@ const staffSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     phone: { type: String, required: true },
     role: { type: String, enum: ["barber", "frontdesk"], required: true },
-    workingHours: { type: String },  // Only for Barbers
-    permissions: { type: [String] }, // Only for Front Desk
+    workingHours: {
+        type: Object,
+        default: {
+            Monday: null,
+            Tuesday: null,
+            Wednesday: null,
+            Thursday: null,
+            Friday: null,
+            Saturday: null,
+            Sunday: null
+        },
+        required: function () { return this.role === "barber"; }
+    },
+    permissions: {
+        type: [String],
+        default: [],
+        required: function () { return this.role === "frontdesk"; }
+    }
 });
 
 module.exports = mongoose.model("Staff", staffSchema);
