@@ -1,5 +1,6 @@
 const express = require("express");
 const Staff = require("../models/Staff");
+const Appointments = require("../models/Appointments");
 const mongoose = require("mongoose");
 const router = express.Router();
 
@@ -156,6 +157,81 @@ router.get("/schedule/:id", async (req, res) => {
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
+
+router.post("/appointments/add", async (req, res) => {
+    try {
+        const { staffId, title, start, serviceType,charges,clientName,end } = req.body;
+        console.log(staffId)
+
+        if (!staffId || !start || !end || !title) {
+            return res.status(400).json({ message: "All fields are required!" });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(staffId)) {
+            return res.status(400).json({ message: "Invalid Staff ID format!" });
+        }
+
+        const staff = await Staff.findById(staffId);
+        if (!staff) {
+            return res.status(404).json({ message: "Staff member not found!" });
+        }
+
+        const newAppointment = new Appointments({
+            staffId,
+            title,
+            start,
+            end,
+            clientName,
+            serviceType,
+            serviceCharges:charges
+        });
+
+        await newAppointment.save();
+
+        res.status(201).json({ message: "Appointment added successfully!", newAppointment });
+    } catch (error) {
+        console.log(error)
+        res.status(500).json({ message: "Server Error", error });
+    }
+});
+
+// ✅ Get All Appointments
+router.get("/appointments", async (req, res) => {
+    try {
+        const appointments = await Appointment.find().populate("staffId", "name");
+        res.json(appointments);
+    } catch (error) {
+        res.status(500).json({ message: "Server Error", error });
+    }
+});
+
+// ✅ Get Appointments by Staff ID
+router.get("/appointments/:staffId", async (req, res) => {
+    try {
+        const { staffId } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(staffId)) {
+            return res.status(400).json({ message: "Invalid Staff ID format!" });
+        }
+
+        const appointments = await Appointments.find({ staffId }).populate("staffId", "name");
+        res.json(appointments);
+    } catch (error) {
+        res.status(500).json({ message: "Server Error", error });
+    }
+});
+router.delete("/appointments/delete", async (req, res) => {
+    const { staffId, start, end } = req.body;
+  
+    try {
+      await Appointments.deleteOne({ staffId, start, end });
+      res.status(200).json({ message: "Appointment deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ error: "Error deleting appointment" });
+    }
+  });
+  
 
 
 
