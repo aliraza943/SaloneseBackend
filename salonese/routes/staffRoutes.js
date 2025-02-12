@@ -243,7 +243,7 @@ router.delete("/appointments/delete", async (req, res) => {
             return res.status(400).json({ message: "Invalid appointment ID format!" });
         }
 
-        if (!staffId || !staffId._id || !mongoose.Types.ObjectId.isValid(staffId._id)) {
+        if (!staffId || !mongoose.Types.ObjectId.isValid(staffId._id)) {
             return res.status(400).json({ message: "Invalid staff ID format!" });
         }
 
@@ -252,16 +252,55 @@ router.delete("/appointments/delete", async (req, res) => {
             return res.status(400).json({ message: "Start time and end time cannot be the same!" });
         }
 
-        // Check if the appointment exists
-        let appointment = await Appointments.findById(id);
-        if (!appointment) {
-            return res.status(404).json({ message: "Appointment not found!" });
+        // Find the staff member and get working hours
+        const staff = await Staff.findById(staffId);
+        if (!staff) {
+            return res.status(404).json({ message: "Staff member not found!" });
         }
 
-        // Check if another appointment exists for the same staff in the requested time range
+        // Ensure the staff is a barber and has working hours
+        if (staff.role !== "barber" || !staff.workingHours) {
+            return res.status(400).json({ message: "This staff member cannot have appointments!" });
+        }
+
+        const workingHours = staff.workingHours;
+
+        // Convert start and end times to a Date object
+        const startTime = new Date(start);
+        const endTime = new Date(end);
+
+        // Get the weekday name (e.g., "Monday")
+        const weekday = startTime.toLocaleString("en-US", { weekday: "long" });
+
+        // Check if the staff has working hours on this day
+        if (!workingHours[weekday] || workingHours[weekday].length === 0) {
+            return res.status(400).json({ message: `Staff does not work on ${weekday}` });
+        }
+
+        // Convert working hours to time ranges
+        const availableSlots = workingHours[weekday].map(slot => {
+            const [startStr, endStr] = slot.split(" - ");
+            return {
+                start: new Date(startTime.toDateString() + " " + startStr),
+                end: new Date(startTime.toDateString() + " " + endStr),
+            };
+        });
+
+        // Check if the appointment falls within any available slot
+        const isWithinWorkingHours = availableSlots.some(slot =>
+            startTime >= slot.start && endTime <= slot.end
+        );
+
+        if (!isWithinWorkingHours) {
+            return res.status(400).json({
+                message: `Appointment must be within working hours: ${workingHours[weekday].join(", ")}`,
+            });
+        }
+
+        // Check for conflicting appointments
         const conflictingAppointment = await Appointments.findOne({
-            staffId: staffId._id, // Corrected reference
-            _id: { $ne: id }, // Exclude the current appointment being updated
+            staffId,
+            _id: { $ne: id },
             $or: [
                 { start: { $lt: end }, end: { $gt: start } }, // Overlaps with requested time
             ],
@@ -274,12 +313,17 @@ router.delete("/appointments/delete", async (req, res) => {
         }
 
         // Update appointment fields
+        const appointment = await Appointments.findById(id);
+        if (!appointment) {
+            return res.status(404).json({ message: "Appointment not found!" });
+        }
+
         appointment.title = title || appointment.title;
         appointment.clientName = clientName || appointment.clientName;
         appointment.serviceType = serviceType || appointment.serviceType;
         appointment.serviceCharges = serviceCharges || appointment.serviceCharges;
-        appointment.start = start || appointment.start;
-        appointment.end = end || appointment.end;
+        appointment.start = startTime;
+        appointment.end = endTime;
 
         // Save the updated appointment
         await appointment.save();
@@ -290,6 +334,7 @@ router.delete("/appointments/delete", async (req, res) => {
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
 
 
 
