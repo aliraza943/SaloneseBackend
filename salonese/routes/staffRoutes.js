@@ -231,28 +231,55 @@ router.delete("/appointments/delete", async (req, res) => {
       res.status(500).json({ error: "Error deleting appointment" });
     }
   });
-  
+
   router.put("/appointments/:id", async (req, res) => {
+    console.log("THIS ROUTE WAS HIT");
+
     try {
         const { id } = req.params;
-        const { title, clientName, serviceType, serviceCharges } = req.body;
+        const { title, clientName, serviceType, serviceCharges, start, end, staffId } = req.body;
 
-        // Check if the ID is valid
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid appointment ID format!" });
         }
 
-        // Find the appointment
+        if (!staffId || !staffId._id || !mongoose.Types.ObjectId.isValid(staffId._id)) {
+            return res.status(400).json({ message: "Invalid staff ID format!" });
+        }
+
+        // Ensure start and end time are not the same
+        if (start === end) {
+            return res.status(400).json({ message: "Start time and end time cannot be the same!" });
+        }
+
+        // Check if the appointment exists
         let appointment = await Appointments.findById(id);
         if (!appointment) {
             return res.status(404).json({ message: "Appointment not found!" });
         }
 
-        // Update only the allowed fields
+        // Check if another appointment exists for the same staff in the requested time range
+        const conflictingAppointment = await Appointments.findOne({
+            staffId: staffId._id, // Corrected reference
+            _id: { $ne: id }, // Exclude the current appointment being updated
+            $or: [
+                { start: { $lt: end }, end: { $gt: start } }, // Overlaps with requested time
+            ],
+        });
+
+        if (conflictingAppointment) {
+            return res.status(400).json({
+                message: `This staff already has an appointment from ${conflictingAppointment.start} to ${conflictingAppointment.end}.`,
+            });
+        }
+
+        // Update appointment fields
         appointment.title = title || appointment.title;
         appointment.clientName = clientName || appointment.clientName;
         appointment.serviceType = serviceType || appointment.serviceType;
         appointment.serviceCharges = serviceCharges || appointment.serviceCharges;
+        appointment.start = start || appointment.start;
+        appointment.end = end || appointment.end;
 
         // Save the updated appointment
         await appointment.save();
@@ -263,6 +290,7 @@ router.delete("/appointments/delete", async (req, res) => {
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
 
 
 
