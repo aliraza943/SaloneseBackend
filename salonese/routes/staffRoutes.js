@@ -232,6 +232,38 @@ router.delete("/appointments/delete", async (req, res) => {
     }
   });
   
+  router.put("/appointments/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, clientName, serviceType, serviceCharges } = req.body;
+
+        // Check if the ID is valid
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: "Invalid appointment ID format!" });
+        }
+
+        // Find the appointment
+        let appointment = await Appointments.findById(id);
+        if (!appointment) {
+            return res.status(404).json({ message: "Appointment not found!" });
+        }
+
+        // Update only the allowed fields
+        appointment.title = title || appointment.title;
+        appointment.clientName = clientName || appointment.clientName;
+        appointment.serviceType = serviceType || appointment.serviceType;
+        appointment.serviceCharges = serviceCharges || appointment.serviceCharges;
+
+        // Save the updated appointment
+        await appointment.save();
+
+        res.json({ message: "Appointment updated successfully!", appointment });
+    } catch (error) {
+        console.error("Appointment Update Error:", error);
+        res.status(500).json({ message: "Server Error", error: error.message });
+    }
+});
+
 
 
 
