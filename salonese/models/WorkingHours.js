@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const ScheduleSchema = new mongoose.Schema({
+    businessId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Business", // Assuming you have a Business model
+        required: true,
+        unique: true
+    },
     schedule: {
         type: Object, // Use Object instead of Map
         default: {

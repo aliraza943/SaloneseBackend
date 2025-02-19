@@ -25,7 +25,19 @@ const BusinessOwnerSchema = new mongoose.Schema({
     permissions: {
         type: [String],
         default: ['manage_users', 'view_reports', 'edit_settings']
+    },
+    businessId: {
+        type: mongoose.Schema.Types.ObjectId,
+        unique: true
     }
 }, { timestamps: true });
+
+// Set businessId before saving the document
+BusinessOwnerSchema.pre('save', function (next) {
+    if (!this.businessId) {
+        this.businessId = this._id;
+    }
+    next();
+});
 
 module.exports = mongoose.model('BusinessOwner', BusinessOwnerSchema);

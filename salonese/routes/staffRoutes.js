@@ -3,18 +3,25 @@ const Staff = require("../models/Staff");
 const Appointments = require("../models/Appointments");
 const mongoose = require("mongoose");
 const router = express.Router();
+const authMiddleware = require('../middleware/authMiddleware');
+const verifyTokenAndPermissions = require("../middleware/permissionsMiddleware");
+const AppointmentMiddleware=require("../middleware/appointmentMiddleware")
 
 
-router.post("/add", async (req, res) => {
+
+router.post("/add", authMiddleware(["manage_staff"]), async (req, res) => {
     try {
         const { name, email, phone, role, workingHours, permissions } = req.body;
 
-      
         if (!name || !email || !phone || !role) {
             return res.status(400).json({ message: "All fields are required!" });
         }
 
-       
+        // Only an admin can add a front desk staff
+        if (role === "frontdesk" && req.user.role !== "admin") {
+            return res.status(403).json({ message: "Only an admin can add a front desk staff." });
+        }
+
         const newStaff = new Staff({
             name,
             email,
@@ -22,6 +29,8 @@ router.post("/add", async (req, res) => {
             role,
             workingHours: role === "barber" ? workingHours : null,
             permissions: role === "frontdesk" ? permissions : [],
+            password: "password123",
+            businessId: req.user.businessId
         });
 
         await newStaff.save();
@@ -32,9 +41,10 @@ router.post("/add", async (req, res) => {
 });
 
 
-router.get("/", async (req, res) => {
+
+router.get("/", authMiddleware(["manage_staff"]),async (req, res) => {
     try {
-        const staff = await Staff.find();
+        const staff = await Staff.find({ businessId: req.user.businessId });
         res.json(staff);
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
@@ -42,12 +52,19 @@ router.get("/", async (req, res) => {
 });
 
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
     try {
         const staff = await Staff.findById(req.params.id);
+        
+        // Check if the staff exists and if the businessId matches the user's businessId
         if (!staff) {
             return res.status(404).json({ message: "Staff member not found!" });
         }
+
+        if (staff.businessId.toString() !== req.user.businessId.toString()) {
+            return res.status(403).json({ message: "Unauthorized to access this staff member's details." });
+        }
+
         res.json(staff);
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
@@ -55,15 +72,21 @@ router.get("/:id", async (req, res) => {
 });
 
 
-router.put("/:id", async (req, res) => {
-    console.log("THIS ROUTE HIT")
+
+router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
+    console.log("THIS ROUTE HIT");
     try {
         const { name, email, phone, role, workingHours, permissions } = req.body;
 
-        
+        // Find the staff member by ID
         let staff = await Staff.findById(req.params.id);
         if (!staff) {
             return res.status(404).json({ message: "Staff member not found!" });
+        }
+
+        // Check if the businessId matches
+        if (staff.businessId.toString() !== req.user.businessId.toString()) {
+            return res.status(403).json({ message: "Unauthorized to update this staff member." });
         }
 
         // Update fields
@@ -74,6 +97,7 @@ router.put("/:id", async (req, res) => {
         staff.workingHours = role === "barber" ? workingHours : null;
         staff.permissions = role === "frontdesk" ? permissions : [];
 
+        // Save the updated staff member
         await staff.save();
         res.json({ message: "Staff updated successfully!", staff });
     } catch (error) {
@@ -84,7 +108,8 @@ router.put("/:id", async (req, res) => {
 
 
 
-router.delete("/:id", async (req, res) => {
+
+router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ message: "Invalid Staff ID format!" });
@@ -95,6 +120,12 @@ router.delete("/:id", async (req, res) => {
             return res.status(404).json({ message: "Staff member not found!" });
         }
 
+        // Check if the businessId matches
+        if (staff.businessId.toString() !== req.user.businessId.toString()) {
+            return res.status(403).json({ message: "Unauthorized to delete this staff member." });
+        }
+
+        // Delete the staff member
         await Staff.findByIdAndDelete(req.params.id);
         res.json({ message: "Staff member deleted successfully!" });
 
@@ -102,43 +133,64 @@ router.delete("/:id", async (req, res) => {
         console.error("Delete Error:", error);
         res.status(500).json({ message: "Server Error", error: error.message });
     }
-})
-router.put("/update-schedule/:id", async (req, res) => {
+});
+
+// router.put("/update-schedule/:id", async (req, res) => {
+//     try {
+//         const { schedule } = req.body;
+//         console.log("Received schedule:", schedule);
+
+//         if (!schedule) {
+//             return res.status(400).json({ message: "Schedule data is required!" });
+//         }
+
+//         const staff = await Staff.findById(req.params.id);
+//         if (!staff) {
+//             return res.status(404).json({ message: "Staff member not found!" });
+//         }
+
+//         // Ensure the staff member is a barber before updating working hours
+//         if (staff.role !== "barber") {
+//             return res.status(403).json({ message: "Only barbers can have working hours!" });
+//         }
+
+//         // Update working hours
+//         staff.workingHours = schedule;
+//         await staff.save();
+
+//         res.json({ message: "Schedule updated successfully!", staff });
+//     } catch (error) {
+//         console.error("Schedule Update Error:", error);
+
+//         // Log more detailed error if it's a validation error or some other specific error
+//         if (error.name === 'ValidationError') {
+//             return res.status(400).json({ message: "Validation error", error: error.message });
+//         }
+
+//         // Return a generic server error for any other errors
+//         res.status(500).json({ message: "Server Error", error: error.message });
+//     }
+// });
+router.put("/update-schedule/:id", verifyTokenAndPermissions, async (req, res) => {
     try {
         const { schedule } = req.body;
-        console.log("Received schedule:", schedule);
-
         if (!schedule) {
             return res.status(400).json({ message: "Schedule data is required!" });
         }
 
-        const staff = await Staff.findById(req.params.id);
-        if (!staff) {
-            return res.status(404).json({ message: "Staff member not found!" });
-        }
+        // Use `req.staff` from the middleware
+        req.staff.workingHours = schedule;
+        await req.staff.save();
 
-        // Ensure the staff member is a barber before updating working hours
-        if (staff.role !== "barber") {
-            return res.status(403).json({ message: "Only barbers can have working hours!" });
-        }
-
-        // Update working hours
-        staff.workingHours = schedule;
-        await staff.save();
-
-        res.json({ message: "Schedule updated successfully!", staff });
+        res.json({ message: "Schedule updated successfully!", staff: req.staff });
     } catch (error) {
         console.error("Schedule Update Error:", error);
-
-        // Log more detailed error if it's a validation error or some other specific error
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ message: "Validation error", error: error.message });
-        }
-
-        // Return a generic server error for any other errors
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
+
+
 router.get("/schedule/:id", async (req, res) => {
     try {
         const staff = await Staff.findById(req.params.id);
@@ -159,10 +211,15 @@ router.get("/schedule/:id", async (req, res) => {
 });
 
 
-router.post("/appointments/add", async (req, res) => {
+router.post("/appointments/add", AppointmentMiddleware, async (req, res) => {
+    console.log("THIS WAS HIT")
     try {
-        const { staffId, title, start, serviceType,charges,clientName,end } = req.body;
-        console.log(staffId)
+        const { staffId, title, start, serviceType, charges, clientName, end } = req.body;
+
+        // If the user is a barber, ensure they can only create appointments for themselves
+        if (req.user.role === "barber" && staffId !== req.user.id) {
+            return res.status(403).json({ message: "You can only create appointments for yourself!" });
+        }
 
         if (!staffId || !start || !end || !title) {
             return res.status(400).json({ message: "All fields are required!" });
@@ -184,18 +241,17 @@ router.post("/appointments/add", async (req, res) => {
             end,
             clientName,
             serviceType,
-            serviceCharges:charges
+            serviceCharges: charges
         });
 
         await newAppointment.save();
 
         res.status(201).json({ message: "Appointment added successfully!", newAppointment });
     } catch (error) {
-        console.log(error)
+        console.error(error);
         res.status(500).json({ message: "Server Error", error });
     }
 });
-
 // ✅ Get All Appointments
 router.get("/appointments", async (req, res) => {
     try {
@@ -221,7 +277,7 @@ router.get("/appointments/:staffId", async (req, res) => {
         res.status(500).json({ message: "Server Error", error });
     }
 });
-router.delete("/appointments/delete", async (req, res) => {
+router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) => {
     const { staffId, start, end } = req.body;
   
     try {
@@ -232,7 +288,7 @@ router.delete("/appointments/delete", async (req, res) => {
     }
   });
 
-  router.put("/appointments/:id", async (req, res) => {
+  router.put("/appointments/:id",AppointmentMiddleware, async (req, res) => {
     console.log("THIS ROUTE WAS HIT");
 
     try {

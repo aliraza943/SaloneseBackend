@@ -7,6 +7,7 @@ const staffRoutes = require("./routes/staffRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
 const workingHoursRoutes = require("./routes/workinghoursRoutes")
 const BusinessOwnerRoute = require("./routes/auth")
+
 dotenv.config();
 connectDB();
 const app = express();

@@ -1,31 +1,14 @@
 const express = require('express');
-const Schedule = require('../models/WorkingHours'); // Using require to import the Schedule model
+const Schedule = require('../models/WorkingHours');
+const authMiddleware = require('../middleware/authMiddleware'); // Using require to import the Schedule model
 
 const router = express.Router();
 
-// Save or update schedule
-router.post("/save-schedule", async (req, res) => {
+
+
+router.get("/get-schedule", authMiddleware([]),async (req, res) => {
     try {
-        const { schedule } = req.body; // Schedule should be an object like { Monday: ['9:00 AM - 5:00 PM'], ... }
-
-        // Delete old schedule (optional)
-        await Schedule.deleteMany();
-
-        // Insert new schedule as a single object
-        const formattedSchedule = new Schedule({
-            schedule: schedule,
-        });
-
-        await formattedSchedule.save();
-
-        res.status(200).json({ message: "Schedule saved successfully" });
-    } catch (error) {
-        res.status(500).json({ error: "Error saving schedule" });
-    }
-});
-router.get("/get-schedule", async (req, res) => {
-    try {
-        const schedule = await Schedule.findOne(); // Fetch the first schedule document
+        const schedule = await Schedule.findOne({businessId:req.user.businessId}); // Fetch the first schedule document
 
         if (!schedule) {
             return res.status(404).json({ error: "Schedule not found" });
@@ -36,23 +19,35 @@ router.get("/get-schedule", async (req, res) => {
         res.status(500).json({ error: "Error fetching schedule" });
     }
 });
-router.put("/update-schedule", async (req, res) => {
+router.put("/update-schedule", authMiddleware(["manage_businessHours"]), async (req, res) => {
     try {
         const { schedule } = req.body;
-        console.log(schedule)
+        console.log("THIS IS THE RECIEVED SCHEDULE",schedule,Date.now());
 
-        let existingSchedule = await Schedule.findOne();
+        let existingSchedule = await Schedule.findOne({ businessId: req.user.businessId });
+
         if (!existingSchedule) {
-            return res.status(404).json({ error: "No schedule found to update" });
+            // If no existing schedule, create a new one
+            existingSchedule = new Schedule({
+                businessId: req.user.businessId,
+                schedule,
+            });
+
+            await existingSchedule.save();
+            return res.status(201).json({ message: "Schedule created successfully", schedule: existingSchedule });
         }
 
+        // Update existing schedule
         existingSchedule.schedule = schedule;
         await existingSchedule.save();
 
-        res.status(200).json({ message: "Schedule updated successfully" });
+        res.status(200).json({ message: "Schedule updated successfully", schedule: existingSchedule });
+
     } catch (error) {
+        console.error("Error updating schedule:", error);
         res.status(500).json({ error: "Error updating schedule" });
     }
-})
+});
+
 
 module.exports = router; // Export the router using module.exports

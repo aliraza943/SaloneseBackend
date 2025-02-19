@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const BusinessOwner = require('../models/BuisenessOwners');
 const authMiddleware = require('../middleware/authMiddleware');
-
+const Staff = require('../models/Staff');
 const router = express.Router();
 
 // Register a Business Owner
@@ -39,28 +39,49 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        const owner = await BusinessOwner.findOne({ email });
-        if (!owner) {
+        let user = await BusinessOwner.findOne({ email });
+        let role = 'admin'; // Default role for business owners
+
+        if (!user) {
+            // If not found in BusinessOwner, check in Staff collection
+            user = await Staff.findOne({ email });
+            role = user.role;
+            
+        }
+
+        if (!user) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        const isMatch = await bcrypt.compare(password, owner.password);
+        const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
+        // Create a token with relevant user details
         const token = jwt.sign(
-            { id: owner._id, role: 'admin', permissions: owner.permissions },
+            { 
+                id: user._id, 
+                role, 
+                permissions: user.permissions, 
+                businessId: user.businessId 
+            },
             process.env.JWT_SECRET,
-            { expiresIn: '1h' }
+            { expiresIn: '5h' }
         );
 
-        res.json({ token, user: { id: owner._id, name: owner.name, email: owner.email, permissions: owner.permissions } });
+        // Remove password before sending response
+        const { password: _, ...userData } = user.toObject();
+
+        res.json({ token, user: userData });
     } catch (error) {
         console.error('Error in /login:', error);
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
+
+
+module.exports = router;
 
 // Protected route example
 router.get('/profile', authMiddleware, async (req, res) => {
