@@ -6,6 +6,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const verifyTokenAndPermissions = require("../middleware/permissionsMiddleware");
 const AppointmentMiddleware=require("../middleware/appointmentMiddleware")
+const Token = require("../models/Tokens")
 
 
 
@@ -89,16 +90,42 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
             return res.status(403).json({ message: "Unauthorized to update this staff member." });
         }
 
-        // Update fields
+        // Store original role and permissions for comparison later
+        const originalRole = staff.role;
+        const originalPermissions = staff.permissions;
+
+        // Update fields allowed for everyone
         staff.name = name || staff.name;
         staff.email = email || staff.email;
         staff.phone = phone || staff.phone;
-        staff.role = role || staff.role;
-        staff.workingHours = role === "barber" ? workingHours : null;
-        staff.permissions = role === "frontdesk" ? permissions : [];
+        if (workingHours) {
+            staff.workingHours = workingHours;
+        }
+
+        // Only allow role and permissions changes if the req.user is admin
+        if (req.user.role === "admin") {
+            if (role) {
+                staff.role = role;
+                // Only update permissions based on role. For frontdesk, use the provided permissions; otherwise, clear them.
+                staff.permissions = role === "frontdesk" ? permissions : [];
+            }
+        } else {
+            // Non-admin users are not allowed to change role or permissions.
+            if (role || permissions) {
+                return res.status(403).json({ message: "Only admin users can change role or permissions." });
+            }
+        }
 
         // Save the updated staff member
         await staff.save();
+
+        // If the role or permissions have changed, invalidate tokens for this staff member
+        if ((role && role !== originalRole) || 
+            (permissions && JSON.stringify(permissions) !== JSON.stringify(originalPermissions))) {
+            await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false }});
+            console.log(`Permissions changed: Tokens invalidated for staff member ${req.params.id}`);
+        }
+
         res.json({ message: "Staff updated successfully!", staff });
     } catch (error) {
         res.status(500).json({ message: "Server Error", error });
@@ -111,29 +138,40 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
 
 router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
     try {
+        // Validate that the staff ID is a valid MongoDB ObjectId
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ message: "Invalid Staff ID format!" });
         }
 
+        // Find the staff member by ID
         const staff = await Staff.findById(req.params.id);
         if (!staff) {
             return res.status(404).json({ message: "Staff member not found!" });
         }
 
-        // Check if the businessId matches
+        // Check if the staff's businessId matches the requester's businessId
         if (staff.businessId.toString() !== req.user.businessId.toString()) {
             return res.status(403).json({ message: "Unauthorized to delete this staff member." });
         }
 
+        // Additional check: if the staff being deleted is 'front desk', only an admin can delete them
+        if (staff.role === "front desk" && req.user.role !== "admin") {
+            return res.status(403).json({ message: "Only admin can delete front desk staff." });
+        }
+
         // Delete the staff member
         await Staff.findByIdAndDelete(req.params.id);
-        res.json({ message: "Staff member deleted successfully!" });
 
+        // Invalidate tokens for this user by marking them as not valid
+        await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false }});
+
+        res.json({ message: "Staff member deleted and tokens invalidated successfully!" });
     } catch (error) {
         console.error("Delete Error:", error);
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
 
 // router.put("/update-schedule/:id", async (req, res) => {
 //     try {

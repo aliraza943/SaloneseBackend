@@ -1,21 +1,28 @@
 const jwt = require('jsonwebtoken');
 const Staff = require('../models/Staff'); // Import your Staff model
+const Token = require('../models/Tokens'); // Import your Token model
 
 const AppointmentMiddleware = async (req, res, next) => {
   try {
+    // Extract the token from the Authorization header
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) {
       return res.status(401).json({ message: 'Token not found' });
     }
 
-    // Decode JWT
+    // Decode and verify the JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("Decoded token:", decoded);
-    req.user = decoded; // Attach user data to request object
+    req.user = decoded; // Attach decoded user data to the request object
+
+    // Check if the token exists and is valid in the database
+    const tokenRecord = await Token.findOne({ token: token, userId: decoded.id, valid: true });
+    if (!tokenRecord) {
+      return res.status(401).json({ message: 'Unauthorized! Token has been invalidated or is not recognized.' });
+    }
 
     const { staffId } = req.body;
 
-    // If user has "manage_appointments" permission, check businessId
+    // If the user has the "manage_appointments" permission, ensure they provide a valid staffId
     if (decoded.permissions.includes("manage_appointments")) {
       if (!staffId) {
         return res.status(400).json({ message: "Staff ID is required!" });
@@ -32,16 +39,15 @@ const AppointmentMiddleware = async (req, res, next) => {
         return res.status(403).json({ message: "You can only add appointments for your business!" });
       }
 
-      return next(); // Allow the request if everything matches
+      return next(); // Everything checks out, move to the next middleware or route handler
     }
 
-    // If user does NOT have manage_appointments, ensure they can only book for themselves
+    // If the user does NOT have "manage_appointments", ensure they can only book an appointment for themselves
     if (staffId !== decoded.id) {
       return res.status(403).json({ message: "You are only allowed to add appointments for yourself!" });
     }
 
     next(); // Proceed to the next middleware or route handler
-
   } catch (err) {
     console.error("Middleware error:", err);
     return res.status(400).json({ message: 'Invalid token' });

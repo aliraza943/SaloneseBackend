@@ -4,7 +4,9 @@ const bcrypt = require('bcryptjs');
 const BusinessOwner = require('../models/BuisenessOwners');
 const authMiddleware = require('../middleware/authMiddleware');
 const Staff = require('../models/Staff');
+const Token = require('../models/Tokens');
 const router = express.Router();
+
 
 // Register a Business Owner
 router.post('/register', async (req, res) => {
@@ -69,6 +71,7 @@ router.post('/login', async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: '5h' }
         );
+        await Token.create({ token, userId: user._id });
 
         // Remove password before sending response
         const { password: _, ...userData } = user.toObject();
