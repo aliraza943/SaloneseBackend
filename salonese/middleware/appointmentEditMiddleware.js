@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const Staff = require('../models/Staff'); // Import your Staff model
 const Token = require('../models/Tokens'); // Import your Token model
 
-const AppointmentMiddleware = async (req, res, next) => {
+const AppointmentEditMiddleware = async (req, res, next) => {
   
   try {
     
@@ -49,7 +49,7 @@ console.log("1 is undefined",staffId)
 console.log("2 is undefined",decoded.id)
 console.log(staffId._id)
     // If the user does NOT have "manage_appointments", ensure they can only book an appointment for themselves
-    if (staffId._id !== decoded.id ) {
+    if (staffId !== decoded.id ) {
       console.log("This caused the error 1")
       return res.status(403).json({ message: "You are only allowed to add appointments for yourself!" });
     }
@@ -61,4 +61,4 @@ console.log(staffId._id)
   }
 };
 
-module.exports = AppointmentMiddleware;
+module.exports = AppointmentEditMiddleware;

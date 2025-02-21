@@ -6,6 +6,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/authMiddleware');
 const verifyTokenAndPermissions = require("../middleware/permissionsMiddleware");
 const AppointmentMiddleware=require("../middleware/appointmentMiddleware")
+const AppointmentEditMiddleware = require("../middleware/appointmentEditMiddleware")
 const Token = require("../models/Tokens")
 
 
@@ -249,7 +250,7 @@ router.get("/schedule/:id", async (req, res) => {
 });
 
 
-router.post("/appointments/add", AppointmentMiddleware, async (req, res) => {
+router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => {
     console.log("THIS WAS HIT")
     try {
         const { staffId, title, start, serviceType, charges, clientName, end } = req.body;
@@ -327,7 +328,7 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
   });
 
   router.put("/appointments/:id",AppointmentMiddleware, async (req, res) => {
-    console.log("THIS ROUTE WAS HIT");
+   
 
     try {
         const { id } = req.params;
