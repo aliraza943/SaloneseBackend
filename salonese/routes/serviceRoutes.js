@@ -125,5 +125,24 @@ router.delete("/:id", authMiddleware(["manage_services"]), async (req, res) => {
     }
 });
 
+router.get("/serviceTypes/serviceDetails",authMiddleware([]),  async (req, res) => {
+    console.log("This was called 2");
+
+    try {
+        // Ensure businessId is available in req.user
+        if (!req.user.businessId) {
+            console.log("this was the case")
+            return res.status(400).json({ message: "Business ID is required!" });
+        }
+
+        // Fetch services belonging to the authenticated business
+        const services = await Service.find({ businessId: req.user.businessId });
+
+        res.json(services);
+    } catch (error) {
+        res.status(500).json({ message: "Server Error", error: error.message });
+    }
+});
+
 
 module.exports = router;

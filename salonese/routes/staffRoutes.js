@@ -78,7 +78,8 @@ router.get("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
 router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
     console.log("THIS ROUTE HIT");
     try {
-        const { name, email, phone, role, workingHours, permissions } = req.body;
+        const { name, email, phone, role, workingHours, permissions,services } = req.body;
+        console.log(services)
 
         // Find the staff member by ID
         let staff = await Staff.findById(req.params.id);
@@ -99,6 +100,7 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
         staff.name = name || staff.name;
         staff.email = email || staff.email;
         staff.phone = phone || staff.phone;
+        staff.services= services || staff.services;
         if (workingHours) {
             staff.workingHours = workingHours;
         }
