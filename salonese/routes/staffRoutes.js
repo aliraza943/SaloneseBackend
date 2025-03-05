@@ -13,7 +13,7 @@ const Token = require("../models/Tokens")
 
 router.post("/add", authMiddleware(["manage_staff"]), async (req, res) => {
     try {
-        const { name, email, phone, role, workingHours, permissions } = req.body;
+        const { name, email, phone, role, workingHours, permissions,services } = req.body;
 
         if (!name || !email || !phone || !role) {
             return res.status(400).json({ message: "All fields are required!" });
@@ -32,7 +32,8 @@ router.post("/add", authMiddleware(["manage_staff"]), async (req, res) => {
             workingHours: role === "barber" ? workingHours : null,
             permissions: role === "frontdesk" ? permissions : [],
             password: "password123",
-            businessId: req.user.businessId
+            businessId: req.user.businessId,
+            services: role ==="barber"? services :[]
         });
 
         await newStaff.save();
@@ -255,7 +256,8 @@ router.get("/schedule/:id", async (req, res) => {
 router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => {
     console.log("THIS WAS HIT")
     try {
-        const { staffId, title, start, serviceType, charges, clientName, end } = req.body;
+        const { staffId, title, start, serviceType, charges, clientName, end,clientId } = req.body;
+        console.log(clientId)
 
         // If the user is a barber, ensure they can only create appointments for themselves
         if (req.user.role === "barber" && staffId !== req.user.id) {
@@ -282,7 +284,8 @@ router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => 
             end,
             clientName,
             serviceType,
-            serviceCharges: charges
+            serviceCharges: charges,
+            clientId:clientId
         });
 
         await newAppointment.save();
@@ -334,7 +337,8 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
 
     try {
         const { id } = req.params;
-        const { title, clientName, serviceType, serviceCharges, start, end, staffId } = req.body;
+        const { title, clientName, serviceType, serviceCharges, start, end, staffId,clientId } = req.body;
+        console.log("this id client ",clientId)
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid appointment ID format!" });
@@ -421,6 +425,7 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
         appointment.serviceCharges = serviceCharges || appointment.serviceCharges;
         appointment.start = startTime;
         appointment.end = endTime;
+        appointment.clientId=clientId||appointment.clientId
 
         // Save the updated appointment
         await appointment.save();
