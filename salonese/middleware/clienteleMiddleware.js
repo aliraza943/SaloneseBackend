@@ -21,16 +21,16 @@ const ClienteleMiddleware = async (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized! Token has been invalidated or is not recognized.' });
     }
 
-    // Allow only barbers or users with "manage_clientele" permission
-    if (decoded.role !== 'barber' && !decoded.permissions.includes("manage_clientele")) {
+    // Allow only providers or users with "manage_clientele" permission
+    if (decoded.role !== 'provider' && !decoded.permissions.includes("manage_clientele")) {
       return res.status(403).json({ message: "Access denied! You don't have permission to manage appointments." });
     }
 
-    // For frontdesk (or non-barber) users, default staffId to their own id
-    if (decoded.role !== 'barber') {
+    // For frontdesk (or non-provider) users, default staffId to their own id
+    if (decoded.role !== 'provider') {
       req.body.staffId = decoded.id;
     } else if (decoded.permissions.includes("manage_clientele")) {
-      // For barbers with manage_clientele, require staffId in the request body.
+      // For providers with manage_clientele, require staffId in the request body.
       if (!req.body.staffId) {
         return res.status(400).json({ message: "Staff ID is required!" });
       }

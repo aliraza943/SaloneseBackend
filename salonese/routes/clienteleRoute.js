@@ -8,8 +8,8 @@ router.post("/add", ClienteleMiddleware, async (req, res) => {
     try {
         let { name, email, password, phone, address, businessId, providerId } = req.body;
 
-        // Ensure a barber assigns their own providerId
-        if (req.user.role === "barber") {
+        // Ensure a provider assigns their own providerId
+        if (req.user.role === "provider") {
             providerId = req.user.id;
         }
 
@@ -47,8 +47,8 @@ router.get("/", ClienteleMiddleware, async (req, res) => {
     try {
         let query = { businessId: req.user.businessId }; // Always filter by businessId
 
-        if (req.user.role === "barber") {
-            query.providerId = req.user.id; // If barber, filter by providerId
+        if (req.user.role === "provider") {
+            query.providerId = req.user.id; // If provider, filter by providerId
         }
 
         const clients = await Clientelle.find(query);

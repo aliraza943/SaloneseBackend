@@ -5,7 +5,7 @@ const staffSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     phone: { type: String, required: true },
-    role: { type: String, enum: ["barber", "frontdesk"], required: true },
+    role: { type: String, enum: ["provider", "frontdesk"], required: true },
     workingHours: {
         type: Object,
         default: {
@@ -17,7 +17,7 @@ const staffSchema = new mongoose.Schema({
             Saturday: null,
             Sunday: null
         },
-        required: function () { return this.role === "barber"; }
+        required: function () { return this.role === "provider"; }
     },
     permissions: {
         type: [String],
@@ -33,12 +33,12 @@ const staffSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
-    // Field for barbers: an array of Service IDs
+    // Field for providers: an array of Service IDs
     services: {
         type: [mongoose.Schema.Types.ObjectId],
         ref: "Service",
         default: [],
-        required: function () { return this.role === "barber"; }
+        required: function () { return this.role === "provider"; }
     }
 }, { timestamps: true });
 

@@ -29,11 +29,11 @@ router.post("/add", authMiddleware(["manage_staff"]), async (req, res) => {
             email,
             phone,
             role,
-            workingHours: role === "barber" ? workingHours : null,
+            workingHours: role === "provider" ? workingHours : null,
             permissions: role === "frontdesk" ? permissions : [],
             password: "password123",
             businessId: req.user.businessId,
-            services: role ==="barber"? services :[]
+            services: role ==="provider"? services :[]
         });
 
         await newStaff.save();
@@ -191,9 +191,9 @@ router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
 //             return res.status(404).json({ message: "Staff member not found!" });
 //         }
 
-//         // Ensure the staff member is a barber before updating working hours
-//         if (staff.role !== "barber") {
-//             return res.status(403).json({ message: "Only barbers can have working hours!" });
+//         // Ensure the staff member is a provider before updating working hours
+//         if (staff.role !== "provider") {
+//             return res.status(403).json({ message: "Only providers can have working hours!" });
 //         }
 
 //         // Update working hours
@@ -240,9 +240,9 @@ router.get("/schedule/:id", async (req, res) => {
             return res.status(404).json({ message: "Staff member not found!" });
         }
 
-        // Ensure the staff member is a barber before returning working hours
-        if (staff.role !== "barber") {
-            return res.status(403).json({ message: "Only barbers have working hours!" });
+        // Ensure the staff member is a provider before returning working hours
+        if (staff.role !== "provider") {
+            return res.status(403).json({ message: "Only providers have working hours!" });
         }
 
         res.json({ schedule: staff.workingHours });
@@ -259,8 +259,8 @@ router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => 
         const { staffId, title, start, serviceType, charges, clientName, end,clientId } = req.body;
         console.log(clientId)
 
-        // If the user is a barber, ensure they can only create appointments for themselves
-        if (req.user.role === "barber" && staffId !== req.user.id) {
+        // If the user is a provider, ensure they can only create appointments for themselves
+        if (req.user.role === "provider" && staffId !== req.user.id) {
             return res.status(403).json({ message: "You can only create appointments for yourself!" });
         }
 
@@ -359,8 +359,8 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
             return res.status(404).json({ message: "Staff member not found!" });
         }
 
-        // Ensure the staff is a barber and has working hours
-        if (staff.role !== "barber" || !staff.workingHours) {
+        // Ensure the staff is a provider and has working hours
+        if (staff.role !== "provider" || !staff.workingHours) {
             return res.status(400).json({ message: "This staff member cannot have appointments!" });
         }
 

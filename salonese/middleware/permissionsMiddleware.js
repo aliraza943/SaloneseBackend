@@ -30,13 +30,13 @@ const verifyTokenAndPermissions = async (req, res, next) => {
         }
 
         
-        if (role === "barber" && staff._id.toString() !== id) {
+        if (role === "provider" && staff._id.toString() !== id) {
             console.log("This was the response sent 2");
             return res.status(403).json({ message: "You can only modify your own schedule!" });
         }
 
         
-        if (role !== "barber" && (!permissions.includes("modify_working_hours") || staff.businessId.toString() !== businessId)) {
+        if (role !== "provider" && (!permissions.includes("modify_working_hours") || staff.businessId.toString() !== businessId)) {
             console.log("This was the response sent 3");
             return res.status(403).json({ message: "You don't have permission to modify this schedule!" });
         }
