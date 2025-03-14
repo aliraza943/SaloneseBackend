@@ -29,6 +29,11 @@ const BusinessOwnerSchema = new mongoose.Schema({
     businessId: {
         type: mongoose.Schema.Types.ObjectId,
         unique: true
+    },
+    province: {
+        type: String,
+        required: true,
+        trim: true
     }
 }, { timestamps: true });
 

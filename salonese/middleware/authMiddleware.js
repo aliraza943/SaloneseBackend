@@ -12,8 +12,7 @@ const authMiddleware = (requiredPermissions = []) => async (req, res, next) => {
         // Extract the token string from the header
         const tokenStr = authHeader.replace('Bearer ', '');
         const decoded = jwt.verify(tokenStr, process.env.JWT_SECRET);
-        console.log(decoded)
-        
+   
         // Validate that the decoded user ID is a valid MongoDB ObjectId
         if (!mongoose.Types.ObjectId.isValid(decoded.id)) {
             console.log("this caused the errpr")
@@ -41,6 +40,8 @@ const authMiddleware = (requiredPermissions = []) => async (req, res, next) => {
                 req.user.permissions.includes(permission)
             );
             if (!hasPermission) {
+                console.log("yeh scene hai")
+
                 return res.status(403).json({ message: 'Access denied. Insufficient permissions.' });
             }
         }

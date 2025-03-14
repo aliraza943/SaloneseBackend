@@ -6,7 +6,7 @@ const AppointmentEditMiddleware = async (req, res, next) => {
   
   try {
     
-    // Extract the token from the Authorization header
+  
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) {
       return res.status(401).json({ message: 'Token not found' });
@@ -15,7 +15,7 @@ const AppointmentEditMiddleware = async (req, res, next) => {
     // Decode and verify the JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded; // Attach decoded user data to the request object
-
+    console.log(decoded)
     // Check if the token exists and is valid in the database
     const tokenRecord = await Token.findOne({ token: token, userId: decoded.id, valid: true });
     if (!tokenRecord) {

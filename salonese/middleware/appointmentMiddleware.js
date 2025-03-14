@@ -3,9 +3,9 @@ const Staff = require('../models/Staff'); // Import your Staff model
 const Token = require('../models/Tokens'); // Import your Token model
 
 const AppointmentMiddleware = async (req, res, next) => {
-  
+
   try {
-    
+
     // Extract the token from the Authorization header
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) {
@@ -14,7 +14,8 @@ const AppointmentMiddleware = async (req, res, next) => {
 
     // Decode and verify the JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // Attach decoded user data to the request object
+    req.user = decoded;
+    console.log(decoded) // Attach decoded user data to the request object
 
     // Check if the token exists and is valid in the database
     const tokenRecord = await Token.findOne({ token: token, userId: decoded.id, valid: true });
@@ -27,6 +28,8 @@ const AppointmentMiddleware = async (req, res, next) => {
     // If the user has the "manage_appointments" permission, ensure they provide a valid staffId
     if (decoded.permissions.includes("manage_appointments")) {
       if (!staffId) {
+     
+    
         return res.status(400).json({ message: "Staff ID is required!" });
       }
 

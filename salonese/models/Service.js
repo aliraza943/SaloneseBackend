@@ -9,7 +9,14 @@ const ServiceSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId, 
         ref: "BusinessOwner", 
         required: true 
-    } // Reference to the BusinessOwner model
+    },
+    taxes: {
+        type: [{
+            type: String,
+            enum: ['GST', 'HST', 'PST']
+        }],
+        default: ['GST', 'HST', 'PST']
+    }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Service", ServiceSchema);
