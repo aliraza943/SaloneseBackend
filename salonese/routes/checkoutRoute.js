@@ -1,9 +1,40 @@
 const express = require("express");
 const router = express.Router();
 const checkoutMiddleware = require("../middleware/checkout");
-const Appointment = require("../models/Appointments"); // Adjust the path as needed
+const Appointment = require("../models/Appointments");
+const businessOwner = require("../models/BuisenessOwners");
+const taxData = require("../models/taxData");  // Adjust the path as needed
 
-// GET /data route protected by checkoutMiddleware
+router.get("/business/taxes", checkoutMiddleware,async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+  
+
+    if (!businessId) {
+      return res.status(400).json({ message: "Business ID is required." });
+    }
+
+    // Find BusinessOwner where _id matches businessId
+    const BusinessOwner = await businessOwner.findOne({ _id: businessId });
+
+    if (!BusinessOwner) {
+      return res.status(404).json({ message: "Business owner not found." });
+    }
+
+    const provinceCode = BusinessOwner.province; // Example: "ON"
+    const applicableTaxes = taxData[provinceCode] || {};
+
+    res.json({
+      businessId,
+      province: provinceCode,
+      taxes: applicableTaxes
+    });
+
+  } catch (error) {
+    console.error("Error fetching business taxes:", error);
+    res.status(500).json({ message: "Server error while fetching taxes." });
+  }
+});
 router.get("/data", checkoutMiddleware, async (req, res) => {
   try {
     const requestTimeHeader = req.headers["x-request-time"];
