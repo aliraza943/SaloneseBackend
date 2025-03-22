@@ -431,12 +431,12 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         var { title, clientName, serviceType, serviceCharges, start, end, staffId, clientId, serviceId } = req.body;
-        console.log(staffId)
+        console.log(staffId);
 
         console.log("This is the client ID:", staffId);
         if (staffId && typeof staffId === "object" && staffId._id) {
             staffId = staffId._id;
-          }
+        }
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid appointment ID format!" });
@@ -493,9 +493,11 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
             });
         }
 
+        // Only check for conflicting appointments with status "booked"
         const conflictingAppointment = await Appointments.findOne({
             staffId,
             _id: { $ne: id },
+            status: "booked",
             $or: [
                 { start: { $lt: end }, end: { $gt: start } }
             ]
@@ -567,7 +569,7 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
         appointment.taxesApplied = taxesApplied;
         appointment.totalTax = totalTax;
         appointment.totalBill = totalBill;
-        appointment.serviceName=service.name
+        appointment.serviceName = service.name;
 
         // Save the updated appointment
         await appointment.save();
@@ -579,6 +581,7 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
         res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
 
 
 
