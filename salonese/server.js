@@ -9,7 +9,7 @@ const workingHoursRoutes = require("./routes/workinghoursRoutes")
 const BusinessOwnerRoute = require("./routes/auth")
 const clienteleRoute = require("./routes/clienteleRoute")
 const checkoutRoute=require("./routes/checkoutRoute")
-
+const ProductRoute = require("./routes/ProductRoute")
 dotenv.config();
 connectDB();
 const app = express();
@@ -21,6 +21,7 @@ app.use("/api/workhours",workingHoursRoutes)
 app.use("/api/auth",BusinessOwnerRoute)
 app.use("/api/clientelle",clienteleRoute)
 app.use("/api/checkout",checkoutRoute)
+app.use("/api/products",ProductRoute)
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT} 🚀`));
