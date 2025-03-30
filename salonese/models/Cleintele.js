@@ -74,11 +74,13 @@ const ClientelleSchema = new mongoose.Schema(
       required: false,
       trim: true,
     },
-    images: {
-      type: [String], // Array of image URLs
-      required: false,
-      default: [],
-    },
+    images: [
+      {
+        url: { type: String, required: true }, // Image URL
+        description: { type: String, required: false, trim: true }, // Optional description
+        date: { type: Date, default: Date.now }, // Date of upload
+      },
+    ],
     businessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",

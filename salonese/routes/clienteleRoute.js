@@ -4,6 +4,7 @@ const Clientelle = require("../models/Cleintele");
 const ClienteleMiddleware = require("../middleware/clienteleMiddleware");
 const multer = require("multer");
 const path = require("path");
+const ClientellePutMiddleware= require("../middleware/ClientPutMiddleware")
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, "uploads/"); // Save files in the "uploads" directory
@@ -15,26 +16,38 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 router.post("/upload/:clientId", upload.single("image"), async (req, res) => {
-  console.log("HMMMMM")
   try {
     const { clientId } = req.params;
+    const { description,date} = req.body; // Get description from request body
+
     const client = await Clientelle.findById(clientId);
     if (!client) return res.status(404).json({ message: "Client not found" });
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
     const imageUrl = `/uploads/${req.file.filename}`;
-    console.log(imageUrl)
-    client.images.push(imageUrl);
+
+    // Push the image object with url, description, and date
+    client.images.push({
+      url: imageUrl,
+      description: description || "", // Use empty string if no description is provided
+      date: date, // Store upload date
+    });
+
     await client.save();
 
-    // Return a JSON response instead of sending 204
-    res.status(200).json({ message: "Image uploaded successfully", imageUrl });
+    res.status(200).json({
+      message: "Image uploaded successfully",
+      image: {
+        url: imageUrl,
+        description: description || "",
+        date: new Date(),
+      },
+    });
   } catch (error) {
     console.error("Error uploading image:", error);
     res.status(500).json({ message: "Error uploading image", error: error.message });
   }
 });
-
 
 
 // Create a new clientele
@@ -150,7 +163,7 @@ router.get("/providerClient/:id", ClienteleMiddleware, async (req, res) => {
 
 
 // Update a client
-router.put("/:id", async (req, res) => {
+router.put("/:id",ClientellePutMiddleware, async (req, res) => {
     try {
         const updatedClient = await Clientelle.findByIdAndUpdate(req.params.id, req.body, { new: true });
         if (!updatedClient) return res.status(404).json({ message: "Client not found" });
