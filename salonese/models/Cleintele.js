@@ -91,10 +91,18 @@ const ClientelleSchema = new mongoose.Schema(
       ref: "Provider",
       required: true,
     },
+    notes: [
+      {
+        title: { type: String, required: true, trim: true },
+        date: { type: Date, default: Date.now },
+        description: { type: String, required: true, trim: true },
+      },
+    ],
     createdAt: {
       type: Date,
       default: Date.now,
     },
+    
   },
   {
     timestamps: true,
