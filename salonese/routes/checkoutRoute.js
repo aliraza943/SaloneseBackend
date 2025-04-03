@@ -35,6 +35,48 @@ router.get("/business/taxes", checkoutMiddleware,async (req, res) => {
     res.status(500).json({ message: "Server error while fetching taxes." });
   }
 });
+
+router.get("/client/:clientId/appointments", async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    if (!clientId) {
+      return res.status(400).json({ message: "Client ID is required." });
+    }
+
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // Build query to fetch appointments for the given clientId
+    const query = { clientId };
+
+    // Count the total documents that match the query
+    const total = await Appointment.countDocuments(query);
+
+    // Fetch the appointments with pagination and sorting
+    const appointments = await Appointment.find(query)
+      .sort({ start: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate({
+        path: "staffId",
+        select: "name email workingHours services"
+      });
+
+    res.json({
+      page,
+      limit,
+      total,
+      data: appointments
+    });
+  } catch (error) {
+    console.error("Error fetching appointments for client:", error);
+    res.status(500).json({ message: "Server error while fetching client appointments." });
+  }
+});
+
 router.get("/data", checkoutMiddleware, async (req, res) => {
   try {
     const requestTimeHeader = req.headers["x-request-time"];
