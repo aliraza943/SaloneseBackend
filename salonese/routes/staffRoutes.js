@@ -267,8 +267,8 @@ router.get("/schedule/:id", async (req, res) => {
 router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => {
     console.log("THIS WAS HIT");
     try {
-        const { staffId, title, start, serviceType, charges, clientName, end, clientId, serviceId } = req.body;
-        console.log("THIS THE SERVICE ID ", serviceId);
+        const { staffId, title, start, serviceType, charges, clientName, end, clientId, serviceId,description } = req.body;
+        console.log("THIS THE desE ID ", description);
 
         // If the user is a provider, ensure they can only create appointments for themselves
         if (req.user.role === "provider" && staffId !== req.user.id) {
@@ -352,7 +352,8 @@ router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => 
             taxesApplied: taxesApplied,
             totalTax: totalTax,
             totalBill: totalBill,
-            serviceName:service.name
+            serviceName:service.name,
+            description
         });
 
         await newAppointment.save();
@@ -430,7 +431,7 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
 router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
-        var { title, clientName, serviceType, serviceCharges, start, end, staffId, clientId, serviceId } = req.body;
+        var { title, clientName, serviceType, serviceCharges, start, end, staffId, clientId, serviceId,description } = req.body;
         console.log(staffId);
 
         console.log("This is the client ID:", staffId);
@@ -570,6 +571,7 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
         appointment.totalTax = totalTax;
         appointment.totalBill = totalBill;
         appointment.serviceName = service.name;
+        appointment.description = description|| appointment.description;
 
         // Save the updated appointment
         await appointment.save();

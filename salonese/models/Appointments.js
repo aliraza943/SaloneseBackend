@@ -37,6 +37,10 @@ const appointmentSchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
+  description: { 
+    type: String, 
+    required: true 
+  },
   serviceCharges: { 
     type: Number, 
     required: true 
