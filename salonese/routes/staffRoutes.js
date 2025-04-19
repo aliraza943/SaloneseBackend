@@ -92,16 +92,15 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
         return res.status(404).json({ message: "Staff member not found!" });
       }
   
-      // Use .equals() to compare ObjectId with string
+      // Check if user is authorized for the same business
       if (!staff.businessId.equals(req.user.businessId)) {
         return res.status(403).json({ message: "Unauthorized to update this staff member." });
       }
   
-      // Store original role and permissions for comparison later
       const originalRole = staff.role;
       const originalPermissions = staff.permissions;
   
-      // Update fields allowed for everyone
+      // Editable fields for all users
       staff.name = name || staff.name;
       staff.email = email || staff.email;
       staff.phone = phone || staff.phone;
@@ -111,32 +110,43 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
       }
   
       if (req.user.role === "admin") {
+        // Admin can change role and permissions
         if (role) {
           staff.role = role;
-          // If the new role is "frontdesk", update permissions using the provided data; 
-          // otherwise, clear permissions.
           staff.permissions = role === "frontdesk" ? permissions : [];
         }
       } else {
-        // For non-admin users (such as frontdesk), ignore any provided role or permissions.
+        // Non-admins (like frontdesk) cannot assign role or permissions
+        if (role && role === "frontdesk") {
+          return res.status(403).json({ message: "Frontdesk cannot assign 'frontdesk' role." });
+        }
+  
+        if (permissions && permissions.length > 0) {
+          return res.status(403).json({ message: "Frontdesk cannot assign permissions." });
+        }
+  
         console.log("Non-admin user attempted to update role/permissions, ignoring changes.");
-        // Leave the staff.role unchanged and force permissions to be empty.
+        // Ignore role change and reset permissions
         staff.permissions = [];
       }
   
-      // Save the updated staff member
+      // Save updated staff
       await staff.save();
   
-      // If the role or permissions have changed, invalidate tokens for this staff member
+      // Only invalidate tokens if admin changed role or permissions
       if (
-        (role && role !== originalRole) ||
-        (permissions && JSON.stringify(permissions) !== JSON.stringify(originalPermissions))
+        req.user.role === "admin" &&
+        (
+          (role && role !== originalRole) ||
+          (permissions && JSON.stringify(permissions) !== JSON.stringify(originalPermissions))
+        )
       ) {
         await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false } });
         console.log(`Permissions changed: Tokens invalidated for staff member ${req.params.id}`);
       }
   
       res.json({ message: "Staff updated successfully!", staff });
+  
     } catch (error) {
       res.status(500).json({ message: "Server Error", error });
     }
