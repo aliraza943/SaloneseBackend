@@ -202,6 +202,191 @@ router.post(
       res.status(500).json({ message: 'Failed to fetch website', error });
     }
   });
+  router.post(
+    '/save-cards',
+    websitemiddleware,
+    upload.array('images', 10),
+    async (req, res) => {
+      try {
+        const cardsMeta = JSON.parse(req.body.cards);
+        console.log('Received metadata:', cardsMeta);
+        
+        // Get image indices if present
+        const imageIndices = req.body.imageIndices ? 
+          (Array.isArray(req.body.imageIndices) ? req.body.imageIndices.map(Number) : [Number(req.body.imageIndices)]) 
+          : [];
+        
+        // Create structured card data to maintain all three positions
+        const structuredCards = Array(3).fill().map(() => ({
+          staffId: '',
+          description: '',
+          image: ''
+        }));
+        
+        // Process the received cards data
+        cardsMeta.forEach((meta) => {
+          const index = meta.index !== undefined ? meta.index : -1;
+          if (index >= 0 && index < 3) {
+            // This card belongs to a specific position
+            const card = {
+              staffId: meta.staffId || '',
+              description: meta.description || '',
+              image: meta.image || ''
+            };
+            
+            // Check if there's a new image for this card
+            const imageIndex = imageIndices.indexOf(index);
+            if (imageIndex !== -1 && req.files[imageIndex]) {
+              card.image = `/uploads/${req.files[imageIndex].filename}`;
+            }
+            
+            structuredCards[index] = card;
+          }
+        });
+        
+        // Find or create website document
+        let website = await Website.findOne({ businessId: req.user.businessId });
+        
+        if (!website) {
+          website = new Website({
+            businessId: req.user.businessId,
+            url: req.body.url || '',
+            cards: structuredCards.filter(card => card.staffId), // Only save cards with staffId
+          });
+        } else {
+          // If we have existing cards, preserve their ordering and update as needed
+          let existingCards = website.cards || [];
+          
+          // Create a map of existing cards by staffId for easy lookup
+          const existingCardsMap = {};
+          existingCards.forEach(card => {
+            if (card.staffId) {
+              const id = typeof card.staffId === 'object' ? card.staffId.toString() : card.staffId.toString();
+              existingCardsMap[id] = card;
+            }
+          });
+          
+          // Now process each structured card
+          const updatedCards = structuredCards
+            .filter(card => card.staffId) // Only keep cards with staffId
+            .map(card => {
+              const id = card.staffId.toString();
+              // If this card already exists, update its fields
+              if (existingCardsMap[id]) {
+                const existingCard = existingCardsMap[id];
+                return {
+                  staffId: existingCard.staffId,
+                  description: card.description,
+                  image: card.image || existingCard.image // Keep existing image if no new one
+                };
+              }
+              // Otherwise this is a new card
+              return card;
+            });
+          
+          website.cards = updatedCards;
+        }
+        
+        await website.save();
+        
+        // Populate staff details for the response
+        await Website.populate(website, {
+          path: 'cards.staffId',
+          select: 'name'
+        });
+        
+        res.status(200).json({
+          success: true,
+          message: 'Team cards saved/updated successfully.',
+          cards: website.cards,
+        });
+        
+      } catch (error) {
+        console.error('Error saving/updating team cards:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to save/update team cards.',
+          error: error.message || error,
+        });
+      }
+    }
+  );
+router.get(
+  '/get-cards',
+  websitemiddleware,
+  async (req, res) => {
+    try {
+      // 1) Find the Website doc for this business and populate staff names
+      const website = await Website
+        .findOne({ businessId: req.user.businessId })
+        .populate('cards.staffId', 'name');
+
+      // 2) If not found, return empty array
+      if (!website) {
+        return res.status(200).json({ success: true, cards: [] });
+      }
+
+      // 3) Send back whatever is in website.cards (could be empty)
+      return res.status(200).json({
+        success: true,
+        cards: website.cards
+      });
+
+    } catch (error) {
+      console.error('Error fetching team cards:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch cards',
+        error: error.message || error
+      });
+    }
+  }
+);
+router.get('/get-meetourTeam/:siteUrl', async (req, res) => {
+  try {
+    const { siteUrl } = req.params;
+
+    // 1) Find the Website doc by public URL and populate staff names
+    const website = await Website
+      .findOne({ url: siteUrl })
+      .populate('cards.staffId', 'name');
+
+    // 2) If not found, return empty array
+    if (!website) {
+      return res.status(200).json({ success: true, cards: [] });
+    }
+
+    // 3) Send back whatever is in website.cards (could be empty)
+    return res.status(200).json({
+      success: true,
+      cards: website.cards
+    });
+
+  } catch (error) {
+    console.error('Error fetching team cards by siteUrl:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch cards',
+      error: error.message || error
+    });
+  }
+});
+
+
+  // router.get('/get-cards', websitemiddleware, async (req, res) => {
+  //   try {
+  //     const website = await Website.findOne({ businessId: req.user.businessId }).select('cards');
+  
+  //     if (!website) {
+  //       return res.status(404).json({ message: 'Website not found' });
+  //     }
+  
+  //     res.json({ success: true, cards: website.cards });
+  //   } catch (error) {
+  //     console.error('Error fetching cards:', error);
+  //     res.status(500).json({ message: 'Failed to fetch cards', success: false });
+  //   }
+  // });
   
   
 module.exports = router;

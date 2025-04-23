@@ -5,16 +5,14 @@ const websiteSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     required: true,
     unique: true,
-    ref: 'User'
+    ref: 'User',
   },
 
-  // 🔹 Site name (new)
   siteName: {
     type: String,
-    default: ''
+    default: '',
   },
 
-  // 🔹 Public URL (new)
   url: {
     type: String,
     required: true,
@@ -22,11 +20,10 @@ const websiteSchema = new mongoose.Schema({
     trim: true,
   },
 
-  // 🔹 Social Links (new)
   socialLinks: {
     facebook: { type: String, default: '' },
     instagram: { type: String, default: '' },
-    twitter: { type: String, default: '' }
+    twitter: { type: String, default: '' },
   },
 
   headerSettings: {
@@ -42,7 +39,7 @@ const websiteSchema = new mongoose.Schema({
   galleryImages: [
     {
       fileName: String,
-    }
+    },
   ],
 
   overlayTexts: [String],
@@ -53,9 +50,37 @@ const websiteSchema = new mongoose.Schema({
     mapCoords: { type: String, default: '' },
     mapLabel: { type: String, default: '' },
     image: { type: String, default: null },
-  }
+  },
+
+  // ✅ New Field: Team Cards
+  cards: {
+    type: [
+      {
+        staffId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'Staff',
+          required: true,
+        },
+        description: {
+          type: String,
+          required: true,
+        },
+        image: {
+          type: String, // path or filename
+          required: true,
+        },
+      },
+    ],
+    validate: [arrayLimit, '{PATH} exceeds the limit of 3'],
+    default: [],
+  },
 }, {
   timestamps: true,
 });
+
+// Custom validator to ensure cards array length ≤ 3
+function arrayLimit(val) {
+  return val.length <= 3;
+}
 
 module.exports = mongoose.model('Website', websiteSchema);
