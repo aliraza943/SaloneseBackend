@@ -210,97 +210,79 @@ router.post(
       try {
         const cardsMeta = JSON.parse(req.body.cards);
         console.log('Received metadata:', cardsMeta);
-        
-        // Get image indices if present
-        const imageIndices = req.body.imageIndices ? 
-          (Array.isArray(req.body.imageIndices) ? req.body.imageIndices.map(Number) : [Number(req.body.imageIndices)]) 
+  
+        const imageIndices = req.body.imageIndices
+          ? (Array.isArray(req.body.imageIndices)
+              ? req.body.imageIndices.map(Number)
+              : [Number(req.body.imageIndices)])
           : [];
-        
-        // Create structured card data to maintain all three positions
-        const structuredCards = Array(3).fill().map(() => ({
-          staffId: '',
-          description: '',
-          image: ''
-        }));
-        
-        // Process the received cards data
-        cardsMeta.forEach((meta) => {
-          const index = meta.index !== undefined ? meta.index : -1;
-          if (index >= 0 && index < 3) {
-            // This card belongs to a specific position
-            const card = {
-              staffId: meta.staffId || '',
-              description: meta.description || '',
-              image: meta.image || ''
-            };
-            
-            // Check if there's a new image for this card
-            const imageIndex = imageIndices.indexOf(index);
-            if (imageIndex !== -1 && req.files[imageIndex]) {
-              card.image = `/uploads/${req.files[imageIndex].filename}`;
-            }
-            
-            structuredCards[index] = card;
-          }
+  
+        // Build cards from metadata
+        const structuredCards = cardsMeta.map((meta, i) => {
+          const index = meta.index !== undefined ? Number(meta.index) : i;
+  
+          const imageIndex = imageIndices.findIndex(
+            (imgIdx) => Number(imgIdx) === index
+          );
+  
+          return {
+            staffId: meta.staffId || '',
+            description: meta.description || '',
+            image:
+              imageIndex !== -1 && req.files[imageIndex]
+                ? `/uploads/${req.files[imageIndex].filename}`
+                : meta.image || '',
+          };
         });
-        
+  
         // Find or create website document
         let website = await Website.findOne({ businessId: req.user.businessId });
-        
+  
         if (!website) {
           website = new Website({
             businessId: req.user.businessId,
             url: req.body.url || '',
-            cards: structuredCards.filter(card => card.staffId), // Only save cards with staffId
+            cards: structuredCards.filter((card) => card.staffId),
           });
         } else {
-          // If we have existing cards, preserve their ordering and update as needed
-          let existingCards = website.cards || [];
-          
-          // Create a map of existing cards by staffId for easy lookup
-          const existingCardsMap = {};
-          existingCards.forEach(card => {
-            if (card.staffId) {
-              const id = typeof card.staffId === 'object' ? card.staffId.toString() : card.staffId.toString();
-              existingCardsMap[id] = card;
-            }
+          const existingCards = website.cards || [];
+  
+          // Map of existing cards by staffId
+          const existingMap = {};
+          existingCards.forEach((card) => {
+            const id = card.staffId?.toString?.() || '';
+            if (id) existingMap[id] = card;
           });
-          
-          // Now process each structured card
+  
           const updatedCards = structuredCards
-            .filter(card => card.staffId) // Only keep cards with staffId
-            .map(card => {
+            .filter((card) => card.staffId)
+            .map((card) => {
               const id = card.staffId.toString();
-              // If this card already exists, update its fields
-              if (existingCardsMap[id]) {
-                const existingCard = existingCardsMap[id];
+              if (existingMap[id]) {
                 return {
-                  staffId: existingCard.staffId,
+                  staffId: existingMap[id].staffId,
                   description: card.description,
-                  image: card.image || existingCard.image // Keep existing image if no new one
+                  image: card.image || existingMap[id].image,
                 };
               }
-              // Otherwise this is a new card
               return card;
             });
-          
+  
           website.cards = updatedCards;
         }
-        
+  
         await website.save();
-        
-        // Populate staff details for the response
+  
         await Website.populate(website, {
           path: 'cards.staffId',
-          select: 'name'
+          select: 'name',
         });
-        
+  
         res.status(200).json({
           success: true,
           message: 'Team cards saved/updated successfully.',
           cards: website.cards,
         });
-        
       } catch (error) {
         console.error('Error saving/updating team cards:', error);
         res.status(500).json({

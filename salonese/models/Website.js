@@ -80,7 +80,7 @@ const websiteSchema = new mongoose.Schema({
 
 // Custom validator to ensure cards array length ≤ 3
 function arrayLimit(val) {
-  return val.length <= 3;
+  return val.length <= 6;
 }
 
 module.exports = mongoose.model('Website', websiteSchema);
