@@ -33,6 +33,11 @@ const staffSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
+    // New field for image (not required)
+    image: {
+        type: String, // URL or filename
+        default: null
+    },
     // Field for providers: an array of Service IDs
     services: {
         type: [mongoose.Schema.Types.ObjectId],

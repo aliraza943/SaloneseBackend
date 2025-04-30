@@ -11,41 +11,66 @@ const AppointmentEditMiddleware = require("../middleware/appointmentEditMiddlewa
 const Token = require("../models/Tokens")
 const taxData = require("../models/taxData"); 
 const BusinessOwner= require("../models/BuisenessOwners")// Import tax data
+const multer = require("multer");
+
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, "uploads/"); // Save to "uploads" folder (make sure it exists!)
+    },
+    filename: function (req, file, cb) {
+      cb(null, `${Date.now()}-${file.originalname}`);
+    },
+  });
+  const upload = multer({ storage });
 
 
-
-
-router.post("/add", authMiddleware(["manage_staff"]), async (req, res) => {
-    try {
-        const { name, email, phone, role, workingHours, permissions,services } = req.body;
-
+  router.post(
+    "/add",
+    authMiddleware(["manage_staff"]),
+    upload.single("image"), // Handles file upload
+    async (req, res) => {
+      try {
+        const { name, email, phone, role, workingHours } = req.body;
+        const permissions = JSON.parse(req.body.permissions || "[]");
+        const services = JSON.parse(req.body.services || "[]");
+  
         if (!name || !email || !phone || !role) {
-            return res.status(400).json({ message: "All fields are required!" });
+          return res.status(400).json({ message: "All fields are required!" });
         }
-
-        // Only an admin can add a front desk staff
+  
+        // Only admin can add a frontdesk staff
         if (role === "frontdesk" && req.user.role !== "admin") {
-            return res.status(403).json({ message: "Only an admin can add a front desk staff." });
+          return res
+            .status(403)
+            .json({ message: "Only an admin can add a front desk staff." });
         }
-
+  
+        // Handle uploaded image
+        const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  
         const newStaff = new Staff({
-            name,
-            email,
-            phone,
-            role,
-            workingHours: role === "provider" ? workingHours : null,
-            permissions: role === "frontdesk" ? permissions : [],
-            password: "password123",
-            businessId: req.user.businessId,
-            services: role ==="provider"? services :[]
+          name,
+          email,
+          phone,
+          role,
+          workingHours: role === "provider" ? workingHours : null,
+          permissions: role === "frontdesk" ? permissions : [],
+          password: "password123",
+          businessId: req.user.businessId,
+          services: role === "provider" ? services : [],
+          image: imageUrl,
         });
-
+  
         await newStaff.save();
+  
         res.status(201).json({ message: "Staff added successfully!", newStaff });
-    } catch (error) {
+      } catch (error) {
+        console.error(error);
         res.status(500).json({ message: "Server Error", error });
+      }
     }
-});
+  );
+  
 
 
 router.get("/", authMiddleware(["manage_staff"]), async (req, res) => {
@@ -80,60 +105,80 @@ router.get("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
 
 
 
-router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
+
+router.put(
+  "/:id",
+  authMiddleware(["manage_staff"]),
+  upload.single("image"),
+  async (req, res) => {
     console.log("THIS ROUTE HIT 41");
     try {
-      const { name, email, phone, role, workingHours, permissions, services } = req.body;
-      console.log("Masla sara rooti da ", services);
-  
-      // Find the staff member by ID
-      let staff = await Staff.findById(req.params.id);
+      let {
+        name,
+        email,
+        phone,
+        role,
+        workingHours,
+        permissions,
+        services,
+      } = req.body;
+
+      // Parse JSON strings if needed
+      try {
+        if (typeof permissions === "string") permissions = JSON.parse(permissions);
+        if (typeof services === "string") services = JSON.parse(services);
+      } catch (err) {
+        return res.status(400).json({ message: "Invalid JSON in permissions/services" });
+      }
+
+      const staff = await Staff.findById(req.params.id);
       if (!staff) {
         return res.status(404).json({ message: "Staff member not found!" });
       }
-  
-      // Check if user is authorized for the same business
+
       if (!staff.businessId.equals(req.user.businessId)) {
         return res.status(403).json({ message: "Unauthorized to update this staff member." });
       }
-  
+
       const originalRole = staff.role;
       const originalPermissions = staff.permissions;
-  
-      // Editable fields for all users
+
+      // Basic field updates
       staff.name = name || staff.name;
       staff.email = email || staff.email;
       staff.phone = phone || staff.phone;
       staff.services = services || staff.services;
+
       if (workingHours) {
         staff.workingHours = workingHours;
       }
-  
+
+      // Handle image upload
+      if (req.file) {
+        const imageUrl = `/uploads/${req.file.filename}`;
+        staff.image = imageUrl;
+      }
+      
+
+      // Admin role logic
       if (req.user.role === "admin") {
-        // Admin can change role and permissions
         if (role) {
           staff.role = role;
           staff.permissions = role === "frontdesk" ? permissions : [];
         }
       } else {
-        // Non-admins (like frontdesk) cannot assign role or permissions
-        if (role && role === "frontdesk") {
+        if (role === "frontdesk") {
           return res.status(403).json({ message: "Frontdesk cannot assign 'frontdesk' role." });
         }
-  
         if (permissions && permissions.length > 0) {
           return res.status(403).json({ message: "Frontdesk cannot assign permissions." });
         }
-  
-        console.log("Non-admin user attempted to update role/permissions, ignoring changes.");
-        // Ignore role change and reset permissions
         staff.permissions = [];
       }
-  
-      // Save updated staff
+
       await staff.save();
-  
-      // Only invalidate tokens if admin changed role or permissions
+
+      // Invalidate tokens if role/permissions changed
       if (
         req.user.role === "admin" &&
         (
@@ -141,17 +186,39 @@ router.put("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
           (permissions && JSON.stringify(permissions) !== JSON.stringify(originalPermissions))
         )
       ) {
-        await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false } });
-        console.log(`Permissions changed: Tokens invalidated for staff member ${req.params.id}`);
+        await Token.updateMany(
+          { userId: req.params.id, valid: true },
+          { $set: { valid: false } }
+        );
+        console.log(`Tokens invalidated for staff ${req.params.id}`);
       }
-  
-      res.json({ message: "Staff updated successfully!", staff });
-  
+
+      // Construct image URL
+      const imageUrl = staff.image ? `/uploads/${staff.image}` : null;
+
+      // Send clean response
+      res.json({
+        message: "Staff updated successfully!",
+        staff: {
+          _id: staff._id,
+          name: staff.name,
+          email: staff.email,
+          phone: staff.phone,
+          role: staff.role,
+          permissions: staff.permissions,
+          services: staff.services,
+          workingHours: staff.workingHours,
+          image: imageUrl,
+          businessId: staff.businessId,
+        },
+      });
     } catch (error) {
-      res.status(500).json({ message: "Server Error", error });
+      console.error("Server error during staff update:", error);
+      res.status(500).json({ message: "Server Error", error: error.message });
     }
-  });
-  
+  }
+);
+
 
 
 

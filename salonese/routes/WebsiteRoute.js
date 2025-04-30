@@ -3,7 +3,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const Website = require('../models/Website'); // adjust path as needed
-const websitemiddleware = require('../middleware/websitemiddleware'); // adjust path if needed
+const websitemiddleware = require('../middleware/websitemiddleware');
+const Service = require('../models/Service'); // adjust the path as needed
+ // adjust path if needed
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -353,6 +355,35 @@ router.get('/get-meetourTeam/:siteUrl', async (req, res) => {
     });
   }
 });
+router.get('/get-services/:siteUrl', async (req, res) => {
+  try {
+    const { siteUrl } = req.params;
+
+    // 1. Find the website by the given public site URL
+    const website = await Website.findOne({ url: siteUrl });
+
+    if (!website) {
+      return res.status(404).json({ message: 'Website not found' });
+    }
+
+    // 2. Find all services that belong to the same businessId
+    const services = await Service.find({ businessId: website.businessId });
+
+    // 3. Return the services
+    return res.status(200).json({
+      success: true,
+      services,
+    });
+  } catch (error) {
+    console.error('Error fetching services by siteUrl:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch services',
+      error: error.message || error,
+    });
+  }
+});
+
 
 
   // router.get('/get-cards', websitemiddleware, async (req, res) => {
