@@ -38,7 +38,7 @@ const staffSchema = new mongoose.Schema({
         type: String, // URL or filename
         default: null
     },
-    // Field for providers: an array of Service IDs
+    // Field for providers: an array of ServiceAA IDs
     services: {
         type: [mongoose.Schema.Types.ObjectId],
         ref: "Service",

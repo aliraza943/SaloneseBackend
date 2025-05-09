@@ -9,7 +9,7 @@ const BusinessOwner= require("../models/BuisenessOwners")// Import tax data
 
 router.post("/add", authMiddleware(["manage_services"]), async (req, res) => {
     try {
-      const { name, duration, price, description, taxes } = req.body;
+      const { name, duration, price, description, taxes ,category} = req.body;
   
       if (!name || !duration || !price) {
         return res.status(400).json({ message: "All fields are required!" });
@@ -48,6 +48,7 @@ router.post("/add", authMiddleware(["manage_services"]), async (req, res) => {
         description,
         businessId: req.user.businessId,
         taxes,
+        category
       });
   
       await newService.save();
