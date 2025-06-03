@@ -53,7 +53,6 @@ router.post("/upload/:clientId", upload.single("image"), async (req, res) => {
 // Create a new clientele
 router.post("/add", ClienteleMiddleware, async (req, res) => {
   try {
-    // Destructure all expected fields from the request body
     let {
       name,
       email,
@@ -70,32 +69,34 @@ router.post("/add", ClienteleMiddleware, async (req, res) => {
       hobbies,
       hairColor,
       referredBy,
-
-      providerId  // might be passed but will be overridden if provider
     } = req.body;
 
-    console.log(req.body);
+    const businessIdFromUser = req.user.businessId;
 
-    // Ensure that if a provider is adding the client, they assign their own providerId
-    if (req.user.role === "provider") {
-      providerId = req.user.id;
-    }
-
-    // Ensure businessId comes from the token
-    const businessId = req.user.businessId;
-
-    console.log(
-      name, email, phone, address1, address2, city, province,
-      dateOfBirth, familyDetails, ageRange, occupation, postalCode,
-      hobbies, hairColor, referredBy, businessId, providerId
-    );
-
-    // Validate required fields (adjust validation as needed)
-    if (!name || !email || !businessId || !providerId) {
+    if (!name || !email || !businessIdFromUser) {
       return res.status(400).json({ message: "All required fields must be filled." });
     }
 
-    // Create new client with all provided data, saving address1 and address2 separately
+    const existingClient = await Clientelle.findOne({ email });
+
+    if (existingClient) {
+      const hasBusiness = existingClient.businessId.some(id => id.equals(businessIdFromUser));
+
+      if (!hasBusiness) {
+        existingClient.businessId.push(businessIdFromUser);
+        await existingClient.save();
+        return res.status(200).json({
+          message: "Client updated with new business association.",
+          client: existingClient,
+        });
+      } else {
+        return res.status(200).json({
+          message: "Client already exists with this business.",
+          client: existingClient,
+        });
+      }
+    }
+
     const newClient = new Clientelle({
       username: name,
       email,
@@ -112,9 +113,7 @@ router.post("/add", ClienteleMiddleware, async (req, res) => {
       hobbies,
       hairColor,
       referredBy,
-      businessId,
-      providerId,
-      province,
+      businessId: [businessIdFromUser],
     });
 
     await newClient.save();
@@ -124,7 +123,6 @@ router.post("/add", ClienteleMiddleware, async (req, res) => {
     res.status(500).json({ message: "Error adding client", error: error.message });
   }
 });
-
 // Get all clientele
 router.get("/", ClienteleMiddleware, async (req, res) => {
   try {
@@ -146,7 +144,7 @@ router.get("/providerClient/:id", ClienteleMiddleware, async (req, res) => {
   console.log("UMMMM")
   try {
     const clients = await Clientelle.find({
-      providerId: req.params.id,
+   
       businessId: req.user.businessId,
     });
 

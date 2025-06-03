@@ -12,10 +12,11 @@ const clienteleRoute = require("./routes/clienteleRoute");
 const checkoutRoute = require("./routes/checkoutRoute");
 const ProductRoute = require("./routes/ProductRoute");
 const WebsoteRoute = require("./routes/WebsiteRoute");
-
-dotenv.config();
+const PaymentRoute = require("./routes/paymentRoute"); // ✅ Add this
+// Load environment variables and connect to the database
+require('dotenv').config(); 
 connectDB();
-
+ 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
@@ -29,6 +30,7 @@ app.use("/api/clientelle", clienteleRoute);
 app.use("/api/checkout", checkoutRoute);
 app.use("/api/products", ProductRoute);
 app.use("/api/website", WebsoteRoute);
+app.use("/api/payment", PaymentRoute); // ✅ Add this
 
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));

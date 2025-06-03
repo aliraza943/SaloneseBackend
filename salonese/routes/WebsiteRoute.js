@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+require('dotenv').config();
 const Website = require('../models/Website'); // adjust path as needed
 const websitemiddleware = require('../middleware/websitemiddleware');
 const Service = require('../models/Service'); // adjust the path as needed
@@ -17,6 +18,17 @@ dayjs.extend(isSameOrBefore);
 const mongoose = require('mongoose');
 const minMax          = require('dayjs/plugin/minMax');
 dayjs.extend(minMax);
+const {validateAppointments,createBill,calculateBill} = require('./ValidateAppointments');
+const { createClient } = require('@supabase/supabase-js');
+const jwt = require('jsonwebtoken');
+console.log("Supabase URL:", process.env.SUPABASE_URL);
+console.log("Supabase Key:", process.env.SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY // must be the Service Role key, not anon/public key
+);
+
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = 'uploads/';
@@ -433,6 +445,7 @@ router.post('/get-professionals/:siteUrl', async (req, res) => {
 router.post('/get-availability/:siteUrl', async (req, res) => {
   const { siteUrl } = req.params;
   const { selection, date } = req.body;
+  console.log('Received data:', { siteUrl, selection, date });
 
   if (!date) {
     return res.status(400).json({ success: false, message: 'Date is required' });
@@ -605,13 +618,13 @@ router.post('/staffandDetails', async (req, res) => {
       Service.find({ _id: { $in: serviceIds } }),
       Staff.find(
         { _id: { $in: staffIds } },
-        '-password -email'            // ← exclude password and email
+        '-password -email -phone' // still excluding these
       )
     ]);
 
     // build lookup maps
     const serviceMap = services.reduce((m, s) => { m[s._id] = s; return m; }, {});
-    const staffMap   = staff.reduce((m, s)   => { m[s._id] = s.toObject(); return m; }, {});
+    const staffMap   = staff.reduce((m, s) => { m[s._id] = s.toObject(); return m; }, {});
 
     // just in case, delete any lingering sensitive props
     for (const st of Object.values(staffMap)) {
@@ -619,11 +632,12 @@ router.post('/staffandDetails', async (req, res) => {
       delete st.email;
     }
 
-    // enrich each appointment
+    // enrich each appointment including businessId from staff
     const enriched = appointments.map(a => ({
       ...a,
       service: serviceMap[a.serviceId] || null,
-      staff:   staffMap[a.staffId]     || null
+      staff: staffMap[a.staffId] || null,
+      businessId: staffMap[a.staffId]?.businessId || null, // add businessId here
     }));
 
     return res.json({ success: true, enriched });
@@ -633,6 +647,88 @@ router.post('/staffandDetails', async (req, res) => {
   }
 });
 
+router.post('/login', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+
+  try {
+    const { data, error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        redirectTo: 'http://localhost:5173/loginConfirmed',
+      },
+    });
+
+    if (error) {
+      console.error('Error sending magic link:', error);
+      return res.status(500).json({ message: 'Failed to send magic link', error });
+    }
+
+    res.status(200).json({ message: 'Magic link sent successfully' });
+  } catch (err) {
+    console.error('Unexpected error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
+router.post('/auth/session', async (req, res) => {
+  const { accessToken, appointments } = req.body;
+
+  if (!accessToken) {
+    return res.status(400).json({ message: 'Access token is required.' });
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(accessToken, process.env.SUPABASE_JWT);
+  } catch (err) {
+    console.error('JWT verification failed:', err.message);
+    return res.status(401).json({
+      message: 'Invalid or expired access token',
+      error: err.message
+    });
+  }
+
+  const userEmail = decoded.email;
+  console.log('Decoded JWT:', decoded);
+
+  // Base response payload
+  const responsePayload = {
+    message: 'Access token is valid.',
+    email: userEmail
+  };
+
+  // If appointments exist, validate and optionally create bill
+  if (Array.isArray(appointments) && appointments.length > 0) {
+    try {
+      const validationErrors = await validateAppointments(appointments);
+
+      if (validationErrors.length > 0) {
+        console.warn('Appointment validation errors:', validationErrors);
+        responsePayload.validationErrors = validationErrors;
+      } else {
+        const { bill } = await createBill(appointments, userEmail);
+        if (bill) {
+          responsePayload.billId = bill._id;
+          console.log('Bill created successfully:', bill._id);
+        }
+      }
+
+    } catch (err) {
+      console.error('Error processing appointments:', err.message);
+    }
+  }
+
+  // Always respond once — after JWT verified
+  res.status(200).json(responsePayload);
+});
+
+module.exports = router;
 
 
 module.exports = router;

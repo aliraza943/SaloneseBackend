@@ -81,16 +81,15 @@ const ClientelleSchema = new mongoose.Schema(
         date: { type: Date, default: Date.now }, // Date of upload
       },
     ],
-    businessId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Business",
-      required: true,
-    },
-    providerId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Provider",
-      required: true,
-    },
+   businessId: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Business",
+        required: true,
+      },
+    ],
+
+
     notes: [
       {
         title: { type: String, required: true, trim: true },

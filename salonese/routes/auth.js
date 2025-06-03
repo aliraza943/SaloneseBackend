@@ -84,7 +84,7 @@ router.post('/login', async (req, res) => {
 });
 
 
-module.exports = router;
+
 
 // Protected route example
 router.get('/profile', authMiddleware, async (req, res) => {
