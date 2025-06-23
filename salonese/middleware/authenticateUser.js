@@ -5,6 +5,7 @@ const SUPABASE_JWT = process.env.SUPABASE_JWT || 'U6fZxY8aAbfE3ISBC5Lpb8ISiwGpd8
 
 const authenticateUser = (req, res, next) => {
   const authHeader = req.headers['authorization'];
+  console.log("THIS WAS HIT ",)
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ message: 'Missing or invalid Authorization header' });

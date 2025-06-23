@@ -65,6 +65,19 @@ const appointmentSchema = new mongoose.Schema({
       amount: { type: Number, required: true }
     }
   ],
+    billId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: "BillComplete", 
+    required: false 
+  },
+   note: {
+    type: String,
+    required: false
+  },
+  noteImageFilename: {
+    type: String,
+    required: false
+  },
   totalTax: { 
     type: Number, 
     default: 0 

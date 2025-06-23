@@ -678,6 +678,7 @@ router.post('/login', async (req, res) => {
 
 router.post('/auth/session', async (req, res) => {
   const { accessToken, appointments } = req.body;
+  console.log(appointments)
 
   if (!accessToken) {
     return res.status(400).json({ message: 'Access token is required.' });
@@ -728,7 +729,7 @@ router.post('/auth/session', async (req, res) => {
   res.status(200).json(responsePayload);
 });
 
-module.exports = router;
+
 
 
 module.exports = router;

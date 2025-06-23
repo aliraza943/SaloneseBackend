@@ -7,164 +7,155 @@ require('dotenv').config();
 const authenticateUser = require('../middleware/authenticateUser');
 const Bill = require('../models/BillModel');
 const Appointment=require('../models/Appointments')
-const Clientelle=require('../models/Cleintele')// Assuming you have a Bill model defined
+const Clientelle=require('../models/Cleintele')
+const multer = require('multer');
+const path = require('path');// Assuming you have a Bill model defined
 const squareClient = new Client({
   accessToken: process.env.SQUARE_ACCESS_TOKEN,
   environment: Environment.Sandbox,
 });
 const paymentsApi = squareClient.paymentsApi;
 
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, path.join(__dirname, '..', 'uploads')); // "uploads/" folder
+  },
+  filename: function (req, file, cb) {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  },
+});
+const upload = multer({ storage });
 
-router.post('/payAppoint', authenticateUser, async (req, res) => {
-  const { cardNonce, billId } = req.body;
-  const userEmail = req.user.email;
+router.post(
+  '/payAppoint',
+  authenticateUser,
+  upload.single('image'),
+  async (req, res) => {
+    const { cardNonce, billId, note } = req.body;
+    const userEmail = req.user.email;
 
-  try {
-    const bill = await Bill.findOne({ _id: billId, userEmail });
-    console.log("Bill found:", bill);
-
-    if (!bill) {
-      return res.status(404).json({ message: 'Bill not found for this user.' });
-    }
-    if (bill.paid) {
-      return res.status(400).json({ message: 'This bill is already paid.' });
-    }
-
-    const amount = bill.total;
-    if (!amount || isNaN(amount)) {
-      return res.status(400).json({ message: 'Invalid bill total amount.' });
-    }
-
-    // ---------------------------
-    // Step 1: Handle Clientelle
-    // ---------------------------
-    let client = await Clientelle.findOne({ email: userEmail });
-
-    if (client) {
-      const businessIdExists = client.businessId.some(id => id.equals(bill.businessId));
-      if (!businessIdExists) {
-        client.businessId.push(bill.businessId);
-        await client.save();
+    try {
+      // 1) Load and validate bill
+      const bill = await Bill.findOne({ _id: billId, userEmail });
+      if (!bill) {
+        return res.status(404).json({ message: 'Bill not found for this user.' });
       }
-    } else {
-      client = new Clientelle({
-        username: req.user.name || userEmail,
-        email: userEmail,
-        businessId: [bill.businessId],
+      if (bill.paid) {
+        return res.status(400).json({ message: 'This bill is already paid.' });
+      }
+
+      // 2) Upsert Clientelle
+      let client = await Clientelle.findOne({ email: userEmail });
+      if (client) {
+        if (!client.businessId.some(id => id.equals(bill.businessId))) {
+          client.businessId.push(bill.businessId);
+          await client.save();
+        }
+      } else {
+        client = await Clientelle.create({
+          username: req.user.name || userEmail,
+          email: userEmail,
+          businessId: [bill.businessId],
+        });
+      }
+      const clientelleId = client._id;
+
+      // 3) Process Square payment
+      const paymentResponse = await paymentsApi.createPayment({
+        sourceId: cardNonce,
+        idempotencyKey: crypto.randomUUID(),
+        amountMoney: {
+          amount: Math.round(Number(bill.total) * 100),
+          currency: 'CAD',
+        },
+        locationId: process.env.SQUARE_LOCATION_ID,
       });
-      await client.save();
-    }
+      const safePayment = JSON.parse(
+        JSON.stringify(
+          paymentResponse.result.payment,
+          (_, v) => (typeof v === 'bigint' ? v.toString() : v)
+        )
+      );
 
-    const clientelleId = client._id;
+      // 4) Mark bill as paid
+      bill.paid = true;
+      await bill.save();
 
-    // ---------------------------
-    // Step 2: Process Square Payment
-    // ---------------------------
-    const response = await paymentsApi.createPayment({
-      sourceId: cardNonce,
-      idempotencyKey: crypto.randomUUID(),
-      amountMoney: {
-        amount: Math.round(Number(amount) * 100),
-        currency: 'CAD',
-      },
-      locationId: "LQGE8KMBCQJHG",
-    });
-
-    const safePayment = JSON.parse(
-      JSON.stringify(response.result.payment, (_k, val) =>
-        typeof val === 'bigint' ? val.toString() : val
-      )
-    );
-
-    // ---------------------------
-    // Step 3: Mark bill as paid
-    // ---------------------------
-    bill.paid = true;
-    await bill.save();
-
-    // ---------------------------
-    // Step 4: Create Appointments
-    // ---------------------------
-    const itemizedMap = {};
-    if (Array.isArray(bill.itemized)) {
-      bill.itemized.forEach(item => {
-        itemizedMap[item.serviceName] = item;
+      // 5) Create appointments based on bill.appointments only
+      const itemMap = {};
+      (bill.itemized || []).forEach(i => {
+        itemMap[i.serviceName] = i;
       });
-    }
 
-    const appointmentsToInsert = bill.appointments
-      .filter(a => a.serviceId && a.start && a.end)
-      .map(a => {
-        const item = itemizedMap[a.serviceName] || {};
-        const serviceCharges = Number(item.basePrice || 0);
+      const appointmentsToInsert = (bill.appointments || [])
+        .filter(a => a.serviceId && a.start && a.end)
+        .map(a => {
+          const item = itemMap[a.serviceName] || {};
+          const serviceCharges = Number(item.basePrice || 0);
 
-        const taxesApplied = [];
-        if (item.taxBreakdown && typeof item.taxBreakdown === 'object') {
-          for (const [type, value] of Object.entries(item.taxBreakdown)) {
-            if (type === 'total') continue;
-            if (
-              value &&
-              typeof value === 'object' &&
-              typeof value.percentage === 'number' &&
-              typeof value.amount === 'number'
-            ) {
-              taxesApplied.push({
-                taxType: type,
-                percentage: value.percentage,
-                amount: value.amount
-              });
+          const taxesApplied = [];
+          if (item.taxBreakdown && typeof item.taxBreakdown === 'object') {
+            for (const [type, val] of Object.entries(item.taxBreakdown)) {
+              if (type !== 'total' && val.amount != null) {
+                taxesApplied.push({
+                  taxType: type,
+                  percentage: val.percentage,
+                  amount: val.amount,
+                });
+              }
             }
           }
-        }
 
-        const totalTax = taxesApplied.reduce((sum, t) => sum + t.amount, 0);
-        const totalBill = +(serviceCharges + totalTax).toFixed(2);
+          const totalTax = taxesApplied.reduce((sum, t) => sum + t.amount, 0);
+          const totalBill = +(serviceCharges + totalTax).toFixed(2);
 
-        return {
-          staffId: a.staffId,
-          serviceId: a.serviceId,
-          businessId: bill.businessId,
-          clientId:  clientelleId,
-         
-          clientName: userEmail,
-          title: a.serviceName,
-          serviceName: a.serviceName,
-          serviceType: "default",
-          description: `Appointment for ${a.serviceName}`,
-          serviceCharges,
-          start: new Date(a.start),
-          end: new Date(a.end),
-          taxesApplied,
-          totalTax,
-          totalBill,
-          status: "booked",
-        };
+          return {
+            staffId:        a.staffId,
+            serviceId:      a.serviceId,
+            businessId:     bill.businessId,
+            clientId:       clientelleId,
+            clientName:     userEmail,
+            title:          a.serviceName,
+            serviceName:    a.serviceName,
+            serviceType:    a.serviceName,
+            description:    `Appointment for ${a.serviceName}`,
+            serviceCharges,
+            taxesApplied,
+            totalTax,
+            totalBill,
+            start:          new Date(a.start),
+            end:            new Date(a.end),
+            status:         'booked',
+            note,                                  // optional manual note
+            noteImageFilename:  req.file?.filename,    // optional uploaded image
+          };
+        });
+
+      if (appointmentsToInsert.length) {
+        await Appointment.insertMany(appointmentsToInsert);
+      }
+
+      // 6) Send response
+      return res.status(200).json({
+        message: 'Payment processed and appointments saved successfully!',
+        payment: safePayment,
+        clientelleId,
       });
-
-    if (appointmentsToInsert.length) {
-      await Appointment.insertMany(appointmentsToInsert);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        return res.status(400).json({
+          message: 'Square API error',
+          errors: err.result.errors,
+        });
+      }
+      console.error('Payment error:', err);
+      return res.status(500).json({
+        message: 'Internal server error',
+        error: err.message,
+      });
     }
-
-    return res.status(200).json({
-      message: 'Payment processed and appointments saved successfully!',
-      payment: safePayment,
-      clientelleId,
-    });
-  } catch (error) {
-    if (error instanceof ApiError) {
-      const errors = error.result.errors.map(e => ({
-        category: e.category,
-        code: e.code,
-        detail: e.detail,
-      }));
-      return res.status(400).json({ message: 'Square API error', errors });
-    }
-
-    console.error('Payment error:', error);
-    return res.status(500).json({ message: 'Internal server error', error: error.message });
   }
-});
-
+);
 
 
 router.get('/bill/:id', authenticateUser, async (req, res) => {
