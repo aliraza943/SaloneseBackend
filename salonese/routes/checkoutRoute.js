@@ -7,6 +7,7 @@ const taxData = require("../models/taxData");
 const Staff = require("../models/Staff");
 const Services= require("../models/Service")
 const BillComplete = require("../models/BillComplete");
+const mongoose = require("mongoose");
 
 router.get("/business/taxes", checkoutMiddleware,async (req, res) => {
   try {
@@ -43,22 +44,24 @@ router.get("/client/:clientId/appointments", async (req, res) => {
   try {
     const { clientId } = req.params;
 
-    if (!clientId) {
-      return res.status(400).json({ message: "Client ID is required." });
+    console.log("Client ID received:", clientId);
+
+    if (!mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ message: "Invalid client ID." });
     }
 
-    // Pagination parameters
+    // Convert string to ObjectId
+    const clientObjectId = new mongoose.Types.ObjectId(clientId);
+
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // Build query to fetch appointments for the given clientId
-    const query = { clientId };
+    // Fetch appointments for the client
+    const query = { clientId: clientObjectId };
 
-    // Count the total documents that match the query
     const total = await Appointment.countDocuments(query);
 
-    // Fetch the appointments with pagination and sorting
     const appointments = await Appointment.find(query)
       .sort({ start: -1 })
       .skip(skip)
@@ -68,7 +71,9 @@ router.get("/client/:clientId/appointments", async (req, res) => {
         select: "name email workingHours services"
       });
 
-    res.json({
+    console.log("Fetched appointments:", appointments.length);
+
+    return res.json({
       page,
       limit,
       total,
@@ -76,7 +81,7 @@ router.get("/client/:clientId/appointments", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching appointments for client:", error);
-    res.status(500).json({ message: "Server error while fetching client appointments." });
+    return res.status(500).json({ message: "Server error while fetching client appointments." });
   }
 });
 

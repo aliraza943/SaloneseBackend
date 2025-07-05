@@ -17,6 +17,10 @@ const BusinessOwnerSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+        businessName: {
+        type: String,
+        required: true
+    },
     role: {
         type: String,
         enum: ['admin'],

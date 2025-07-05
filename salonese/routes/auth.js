@@ -42,13 +42,19 @@ router.post('/login', async (req, res) => {
         const { email, password } = req.body;
 
         let user = await BusinessOwner.findOne({ email });
-        let role = 'admin'; // Default role for business owners
+        let role = 'admin';
+        let businessName = null;
 
         if (!user) {
-            // If not found in BusinessOwner, check in Staff collection
             user = await Staff.findOne({ email });
-            role = user.role;
-            
+            if (user) {
+                role = user.role;
+
+                const business = await BusinessOwner.findById(user.businessId);
+                businessName = business?.businessName || null;
+            }
+        } else {
+            businessName = user.businessName || null;
         }
 
         if (!user) {
@@ -60,7 +66,6 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        // Create a token with relevant user details
         const token = jwt.sign(
             { 
                 id: user._id, 
@@ -71,10 +76,11 @@ router.post('/login', async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: '5h' }
         );
+
         await Token.create({ token, userId: user._id });
 
-        // Remove password before sending response
         const { password: _, ...userData } = user.toObject();
+        userData.businessName = businessName;
 
         res.json({ token, user: userData });
     } catch (error) {
@@ -82,6 +88,8 @@ router.post('/login', async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
+
+
 
 
 
