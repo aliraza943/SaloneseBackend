@@ -2,7 +2,7 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const path = require("path"); // ✅ Add this
+const path = require("path");// ✅ Add this
 const connectDB = require("./config/db");
 const staffRoutes = require("./routes/staffRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
@@ -12,8 +12,9 @@ const clienteleRoute = require("./routes/clienteleRoute");
 const checkoutRoute = require("./routes/checkoutRoute");
 const ProductRoute = require("./routes/ProductRoute");
 const WebsoteRoute = require("./routes/WebsiteRoute");
-const PaymentRoute = require("./routes/paymentRoute"); // ✅ Add this
-// Load environment variables and connect to the database
+const PaymentRoute = require("./routes/paymentRoute");
+const reportAnalysis=require ("./routes/reportAnalysis"); 
+
 require('dotenv').config(); 
 connectDB();
  
@@ -31,7 +32,7 @@ app.use("/api/checkout", checkoutRoute);
 app.use("/api/products", ProductRoute);
 app.use("/api/website", WebsoteRoute);
 app.use("/api/payment", PaymentRoute); // ✅ Add this
-
+app.use('/api/report-analysis', reportAnalysis);
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 

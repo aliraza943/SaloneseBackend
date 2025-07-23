@@ -40,7 +40,9 @@ const BillSchema = new mongoose.Schema({
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business' },
 
     notes: { type: String },
-    paymentMethod: { type: String }
+    paymentMethod: { type: String },
+    businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'Business' }
+
 });
 
 module.exports = mongoose.model('BillComplete', BillSchema);

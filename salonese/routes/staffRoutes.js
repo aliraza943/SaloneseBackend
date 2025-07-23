@@ -12,7 +12,9 @@ const Token = require("../models/Tokens")
 const taxData = require("../models/taxData"); 
 const BusinessOwner= require("../models/BuisenessOwners")// Import tax data
 const multer = require("multer");
-const BillComplete = require("../models/BillComplete"); // Import BillComplete model
+const BillComplete = require("../models/BillComplete");
+const authenticateToken = require('../middleware/markAsCompleteMiddleware');
+ // Import BillComplete model
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -667,7 +669,7 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
 
 
 
-router.post('/appointments/markAsComplete', async (req, res) => {
+router.post('/appointments/markAsComplete', authenticateToken, async (req, res) => {
   console.log("Marking Receipt as Complete");
 
   try {
@@ -688,6 +690,7 @@ router.post('/appointments/markAsComplete', async (req, res) => {
         allAppointmentsForBill.push({
           _id: a._id,
           staffId: a.staffId?._id || a.staffId,
+          staffName: a.staffId?.name || a.staffName || '',
           clientId: a.clientId,
           businessId: a.businessId,
           title: a.title,
@@ -721,11 +724,15 @@ router.post('/appointments/markAsComplete', async (req, res) => {
         totalBill, note, quantity
       } = raw;
 
+      const staffObj = typeof staffId === 'object' ? staffId : {};
+
       if (!businessId || !title || !serviceType || !serviceId || !clientName || !description || !serviceCharges) {
         const fakeId = `auto_${new mongoose.Types.ObjectId().toHexString()}`;
         const fakeAppt = {
           _id: fakeId,
-          staffId, clientId, businessId,
+          staffId: staffObj._id || staffId,
+          staffName: staffObj.name || '',
+          clientId, businessId,
           title, serviceType, serviceId, serviceName,
           clientName, description, serviceCharges,
           start, end, taxesApplied, totalTax,
@@ -738,7 +745,7 @@ router.post('/appointments/markAsComplete', async (req, res) => {
       }
 
       const appt = new Appointments({
-        staffId: staffId?._id || staffId,
+        staffId: staffObj._id || staffId,
         clientId, businessId,
         title, serviceType, serviceId, serviceName,
         clientName, description, serviceCharges,
@@ -751,7 +758,8 @@ router.post('/appointments/markAsComplete', async (req, res) => {
 
       allAppointmentsForBill.push({
         _id: saved._id,
-        staffId: saved.staffId,
+        staffId: typeof saved.staffId === 'object' ? saved.staffId._id : saved.staffId,
+        staffName: typeof saved.staffId === 'object' ? saved.staffId.name : '',
         clientId: saved.clientId,
         businessId: saved.businessId,
         title: saved.title,
@@ -797,7 +805,8 @@ router.post('/appointments/markAsComplete', async (req, res) => {
       appointments: allAppointmentsForBill,
       products,
       totalAmount: grandTotal,
-      status: 'unpaid'
+      status: 'paid',
+      businessId: req.user.businessId
     }).save();
 
     // 5) Backfill billId on real appointments:
@@ -819,5 +828,6 @@ router.post('/appointments/markAsComplete', async (req, res) => {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
+
 
 module.exports = router;
