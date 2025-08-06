@@ -9,7 +9,9 @@ const Bill = require('../models/BillModel');
 const Appointment=require('../models/Appointments')
 const Clientelle=require('../models/Cleintele')
 const multer = require('multer');
-const path = require('path');// Assuming you have a Bill model defined
+const path = require('path');
+const Notification = require('../models/notifications');
+const Staff = require("../models/Staff");
 const squareClient = new Client({
   accessToken: process.env.SQUARE_ACCESS_TOKEN,
   environment: Environment.Sandbox,
@@ -70,6 +72,7 @@ router.post(
         },
         locationId: process.env.SQUARE_LOCATION_ID,
       });
+
       const safePayment = JSON.parse(
         JSON.stringify(
           paymentResponse.result.payment,
@@ -81,7 +84,7 @@ router.post(
       bill.paid = true;
       await bill.save();
 
-      // 5) Create appointments based on bill.appointments only
+      // 5) Create appointments
       const itemMap = {};
       (bill.itemized || []).forEach(i => {
         itemMap[i.serviceName] = i;
@@ -110,32 +113,99 @@ router.post(
           const totalBill = +(serviceCharges + totalTax).toFixed(2);
 
           return {
-            staffId:        a.staffId,
-            serviceId:      a.serviceId,
-            businessId:     bill.businessId,
-            clientId:       clientelleId,
-            clientName:     userEmail,
-            title:          a.serviceName,
-            serviceName:    a.serviceName,
-            serviceType:    a.serviceName,
-            description:    `Appointment for ${a.serviceName}`,
+            staffId: a.staffId,
+            serviceId: a.serviceId,
+            businessId: bill.businessId,
+            clientId: clientelleId,
+            clientName: userEmail,
+            title: a.serviceName,
+            serviceName: a.serviceName,
+            serviceType: a.serviceName,
+            description: `Appointment for ${a.serviceName}`,
             serviceCharges,
             taxesApplied,
             totalTax,
             totalBill,
-            start:          new Date(a.start),
-            end:            new Date(a.end),
-            status:         'booked',
-            note,                                  // optional manual note
-            noteImageFilename:  req.file?.filename,    // optional uploaded image
+            start: new Date(a.start),
+            end: new Date(a.end),
+            status: 'booked',
+            note,
+            noteImageFilename: req.file?.filename,
           };
         });
 
-      if (appointmentsToInsert.length) {
-        await Appointment.insertMany(appointmentsToInsert);
-      }
+      let insertedAppointments = [];
+if (appointmentsToInsert.length) {
+  insertedAppointments = await Appointment.insertMany(appointmentsToInsert);
 
-      // 6) Send response
+  // 6) Create notifications
+  const notifications = [];
+
+  // 6a) Notify assigned staff
+  insertedAppointments.forEach(appt => {
+    notifications.push({
+      businessId: appt.businessId,
+      appointmentId: appt._id,
+      clientId: appt.clientId,
+      staffId: appt.staffId,
+      clientName: appt.clientName,
+      serviceName: appt.serviceName,
+      serviceId: appt.serviceId,
+      start: appt.start,
+      end: appt.end,
+      type: 'appointment-booked',
+      seen: false,
+      method: 'online-portal',
+    });
+  });
+
+  // 6b) Notify all frontdesk staff in the business
+  const frontdeskStaff = await Staff.find(
+    { businessId: bill.businessId, role: 'frontdesk' },
+    '_id'
+  );
+
+  frontdeskStaff.forEach(staff => {
+    insertedAppointments.forEach(appt => {
+      notifications.push({
+        businessId: appt.businessId,
+        appointmentId: appt._id,
+        clientId: appt.clientId,
+        staffId: staff._id,
+        clientName: appt.clientName,
+        serviceName: appt.serviceName,
+        serviceId: appt.serviceId,
+        start: appt.start,
+        end: appt.end,
+        type: 'appointment-booked',
+        seen: false,
+        method: 'online-portal',
+      });
+    });
+  });
+
+  // 6c) Notify business as a whole (general notification)
+  insertedAppointments.forEach(appt => {
+    notifications.push({
+      businessId: appt.businessId,
+      appointmentId: appt._id,
+      clientId: appt.clientId,
+      staffId: appt.businessId, // Set staffId to businessId
+      clientName: appt.clientName,
+      serviceName: appt.serviceName,
+      serviceId: appt.serviceId,
+      start: appt.start,
+      end: appt.end,
+      type: 'appointment-booked',
+      seen: false,
+      method: 'online-portal',
+    });
+  });
+
+  await Notification.insertMany(notifications);
+}
+
+      // 7) Send response
       return res.status(200).json({
         message: 'Payment processed and appointments saved successfully!',
         payment: safePayment,

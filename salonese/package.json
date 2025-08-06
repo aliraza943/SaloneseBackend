@@ -24,6 +24,7 @@
     "mongoose": "^8.9.5",
     "multer": "^1.4.5-lts.2",
     "path": "^0.12.7",
+    "socket.io": "^4.8.1",
     "square": "^39.1.0",
     "squareup": "^1.0.0"
   },

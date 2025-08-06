@@ -14,6 +14,7 @@ const BusinessOwner= require("../models/BuisenessOwners")// Import tax data
 const multer = require("multer");
 const BillComplete = require("../models/BillComplete");
 const authenticateToken = require('../middleware/markAsCompleteMiddleware');
+const Notification = require("../models/notifications"); // Import Notification model
  // Import BillComplete model
 
 const storage = multer.diskStorage({
@@ -437,6 +438,206 @@ router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => 
         });
 
         await newAppointment.save();
+     
+
+// 🔔 If booked by provider → notify provider himself
+if (req.user.role === "provider") {
+    const notifications = [];
+
+    // Notify provider themselves
+    notifications.push({
+        staffId: req.user.id,
+        businessId: req.user.businessId,
+        method: "Provider Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    // Notify all frontdesks in the business
+    const frontdesks = await Staff.find({
+        businessId: req.user.businessId,
+        role: "frontdesk"
+    });
+
+    frontdesks.forEach(fd => {
+        notifications.push({
+            staffId: fd._id,
+            businessId: req.user.businessId,
+            method: "Provider Booking",
+            type: "appointment-booked",
+            appointmentId: newAppointment._id,
+            clientId,
+            clientName,
+            serviceName: service.name,
+            serviceId,
+            start,
+            end,
+            seen: false,
+            createdAt: new Date()
+        });
+    });
+
+    // Notify the business owner (staffId = businessId)
+    notifications.push({
+        staffId: req.user.businessId, // Assign businessId as staffId for business owner
+        businessId: req.user.businessId,
+        method: "Provider Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    await Notification.insertMany(notifications);
+    console.log(`Provider → Notifications sent to self, ${frontdesks.length} frontdesks, and business owner.`);
+}
+
+
+// 🔔 If booked by frontdesk → notify provider + all frontdesks
+if (req.user.role === "frontdesk") {
+    const frontdesks = await Staff.find({
+        businessId: req.user.businessId,
+        role: "frontdesk"
+    });
+
+    const notifications = [];
+
+    // Notify provider (staffId used in the appointment)
+    notifications.push({
+        staffId,
+        businessId: req.user.businessId,
+        method: "Frontdesk Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    // Notify all frontdesks
+    frontdesks.forEach(fd => {
+        notifications.push({
+            staffId: fd._id,
+            businessId: req.user.businessId,
+            method: "Frontdesk Booking",
+            type: "appointment-booked",
+            appointmentId: newAppointment._id,
+            clientId,
+            clientName,
+            serviceName: service.name,
+            serviceId,
+            start,
+            end,
+            seen: false,
+            createdAt: new Date()
+        });
+    });
+
+    // Notify the business owner (staffId = businessId)
+    notifications.push({
+        staffId: req.user.businessId,
+        businessId: req.user.businessId,
+        method: "Frontdesk Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    await Notification.insertMany(notifications);
+    console.log(`Frontdesk → Notifications sent to provider, ${frontdesks.length} frontdesks, and business owner.`);
+}
+if (req.user.role === "admin") {
+    const notifications = [];
+
+    // Notify provider (staffId used in the appointment)
+    notifications.push({
+        staffId,
+        businessId: req.user.businessId,
+        method: "Admin Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    // Notify all frontdesks in the business
+    const frontdesks = await Staff.find({
+        businessId: req.user.businessId,
+        role: "frontdesk"
+    });
+
+    frontdesks.forEach(fd => {
+        notifications.push({
+            staffId: fd._id,
+            businessId: req.user.businessId,
+            method: "Admin Booking",
+            type: "appointment-booked",
+            appointmentId: newAppointment._id,
+            clientId,
+            clientName,
+            serviceName: service.name,
+            serviceId,
+            start,
+            end,
+            seen: false,
+            createdAt: new Date()
+        });
+    });
+
+    // Notify the admin themselves
+    notifications.push({
+        staffId: req.user.id,
+        businessId: req.user.businessId,
+        method: "Admin Booking",
+        type: "appointment-booked",
+        appointmentId: newAppointment._id,
+        clientId,
+        clientName,
+        serviceName: service.name,
+        serviceId,
+        start,
+        end,
+        seen: false,
+        createdAt: new Date()
+    });
+
+    await Notification.insertMany(notifications);
+    console.log(`Admin → Notifications sent to provider, ${frontdesks.length} frontdesks, and the admin.`);
+}
+
+
 
         res.status(201).json({ 
             message: "Appointment added successfully!", 
@@ -490,8 +691,8 @@ router.get("/appointments/:staffId", async (req, res) => {
 
 router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) => {
     const { staffId, start, end } = req.body;
-    console.log("MIDDLEWARE PASSED")
-  
+    console.log("MIDDLEWARE PASSED");
+
     try {
         const result = await Appointments.updateOne(
             { staffId, start, end },
@@ -502,11 +703,138 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
             return res.status(404).json({ message: "No matching appointment found" });
         }
 
+        const cancelledAppointment = await Appointments.findOne({ staffId, start, end });
+
+        if (!cancelledAppointment) {
+            return res.status(404).json({ message: "Cancelled appointment not found" });
+        }
+
+        const service = await Services.findById(cancelledAppointment.serviceId);
+        const clientName = cancelledAppointment.clientName;
+
+        const frontdesks = await Staff.find({
+            businessId: req.user.businessId,
+            role: "frontdesk"
+        });
+
+        const notifications = [];
+
+        // Shared notification data
+        const baseNotification = {
+            businessId: req.user.businessId,
+            method: "",
+            type: "appointment-cancelled",
+            appointmentId: cancelledAppointment._id,
+            clientId: cancelledAppointment.clientId,
+            clientName,
+            serviceName: service?.name,
+            serviceId: cancelledAppointment.serviceId,
+            start,
+            end,
+            seen: false,
+            createdAt: new Date()
+        };
+
+        // Provider cancels
+        if (req.user.role === "provider") {
+            baseNotification.method = "Provider Cancel";
+
+            // Notify provider
+            notifications.push({
+                ...baseNotification,
+                staffId: req.user.id
+            });
+
+            // Notify frontdesks
+            frontdesks.forEach(fd => {
+                notifications.push({
+                    ...baseNotification,
+                    staffId: fd._id
+                });
+            });
+
+            // Notify business owner
+            notifications.push({
+                ...baseNotification,
+                staffId: req.user.businessId
+            });
+
+            console.log(`Provider → Notified self, ${frontdesks.length} frontdesks, and business owner.`);
+        }
+
+        // Frontdesk cancels
+        if (req.user.role === "frontdesk") {
+            baseNotification.method = "Frontdesk Cancel";
+
+            // Notify provider
+            notifications.push({
+                ...baseNotification,
+                staffId
+            });
+
+            // Notify frontdesks
+            frontdesks.forEach(fd => {
+                notifications.push({
+                    ...baseNotification,
+                    staffId: fd._id
+                });
+            });
+
+            // Notify business owner
+            notifications.push({
+                ...baseNotification,
+                staffId: req.user.businessId
+            });
+
+            console.log(`Frontdesk → Notified provider, ${frontdesks.length} frontdesks, and business owner.`);
+        }
+
+        // Admin cancels
+        if (req.user.role === "admin") {
+            baseNotification.method = "Admin Cancel";
+
+            // Notify provider
+            notifications.push({
+                ...baseNotification,
+                staffId
+            });
+
+            // Notify frontdesks
+            frontdesks.forEach(fd => {
+                notifications.push({
+                    ...baseNotification,
+                    staffId: fd._id
+                });
+            });
+
+            // Notify admin themselves
+            notifications.push({
+                ...baseNotification,
+                staffId: req.user.id
+            });
+
+            // Notify business owner
+            notifications.push({
+                ...baseNotification,
+                staffId: req.user.businessId
+            });
+
+            console.log(`Admin → Notified provider, ${frontdesks.length} frontdesks, self, and business owner.`);
+        }
+
+        if (notifications.length > 0) {
+            await Notification.insertMany(notifications);
+        }
+
         res.status(200).json({ message: "Appointment status changed to 'cancelled'" });
+
     } catch (error) {
+        console.error("Error cancelling appointment:", error);
         res.status(500).json({ error: "Error cancelling appointment" });
     }
 });
+
+
 
 router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
     try {
@@ -655,6 +983,121 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
 
         // Save the updated appointment
         await appointment.save();
+        // Fetch all frontdesks
+// 🔔 Fetch all frontdesks
+const frontdesks = await Staff.find({
+    businessId: req.user.businessId,
+    role: "frontdesk"
+});
+
+const notifications = [];
+
+// 🔔 Shared notification base
+const baseNotification = {
+    businessId: req.user.businessId,
+    type: "appointment-updated",
+    appointmentId: appointment._id,
+    clientId: appointment.clientId,
+    clientName: appointment.clientName,
+    serviceName: appointment.serviceName,
+    serviceId: appointment.serviceId,
+    start: appointment.start,
+    end: appointment.end,
+    seen: false,
+    createdAt: new Date()
+};
+
+if (req.user.role === "provider") {
+    baseNotification.method = "Provider Update";
+
+    // Notify provider
+    notifications.push({
+        ...baseNotification,
+        staffId: req.user.id
+    });
+
+    // Notify frontdesks
+    frontdesks.forEach(fd => {
+        notifications.push({
+            ...baseNotification,
+            staffId: fd._id
+        });
+    });
+
+    // 🔔 Notify business owner
+    notifications.push({
+        ...baseNotification,
+        staffId: req.user.businessId
+    });
+
+    console.log(`Provider → Notified self, ${frontdesks.length} frontdesks, and business owner.`);
+}
+
+if (req.user.role === "frontdesk") {
+    baseNotification.method = "Frontdesk Update";
+
+    // Notify provider
+    notifications.push({
+        ...baseNotification,
+        staffId: appointment.staffId
+    });
+
+    // Notify frontdesks
+    frontdesks.forEach(fd => {
+        notifications.push({
+            ...baseNotification,
+            staffId: fd._id
+        });
+    });
+
+    // 🔔 Notify business owner
+    notifications.push({
+        ...baseNotification,
+        staffId: req.user.businessId
+    });
+
+    console.log(`Frontdesk → Notified provider, ${frontdesks.length} frontdesks, and business owner.`);
+}
+
+if (req.user.role === "admin") {
+    baseNotification.method = "Admin Update";
+
+    // Notify provider
+    notifications.push({
+        ...baseNotification,
+        staffId: appointment.staffId
+    });
+
+    // Notify frontdesks
+    frontdesks.forEach(fd => {
+        notifications.push({
+            ...baseNotification,
+            staffId: fd._id
+        });
+    });
+
+    // Notify admin himself
+    notifications.push({
+        ...baseNotification,
+        staffId: req.user.id
+    });
+
+    // 🔔 Notify business owner
+    notifications.push({
+        ...baseNotification,
+        staffId: req.user.businessId
+    });
+
+    console.log(`Admin → Notified provider, ${frontdesks.length} frontdesks, self, and business owner.`);
+}
+
+// Insert notifications
+if (notifications.length > 0) {
+    await Notification.insertMany(notifications);
+    console.log(`${req.user.role} updated appointment. Notifications sent.`);
+}
+
+
 
         res.json({ message: "Appointment updated successfully!", appointment });
 
@@ -814,6 +1257,66 @@ router.post('/appointments/markAsComplete', authenticateToken, async (req, res) 
       { _id: { $in: [...existingIds, ...newIds] } },
       { billId: bill._id }
     );
+    const realAppointments = allAppointmentsForBill.filter(a => !a.autoGenerated);
+
+const frontdesks = await Staff.find({
+  businessId: req.user.businessId,
+  role: "frontdesk"
+});
+
+const notifications = [];
+
+for (const appt of realAppointments) {
+  const baseNotification = {
+    businessId: req.user.businessId,
+    appointmentId: appt._id,
+    clientId: appt.clientId,
+    clientName: appt.clientName,
+    serviceName: appt.serviceName,
+    serviceId: appt.serviceId,
+    start: appt.start,
+    end: appt.end,
+    type: "appointment-completed",
+    method: "Marked As Complete",
+    seen: false,
+    createdAt: new Date()
+  };
+
+  // Notify provider
+  if (appt.staffId) {
+    notifications.push({
+      ...baseNotification,
+      staffId: appt.staffId
+    });
+  }
+
+  // Notify frontdesks
+  frontdesks.forEach(fd => {
+    notifications.push({
+      ...baseNotification,
+      staffId: fd._id
+    });
+  });
+
+  // Notify business owner
+  notifications.push({
+    ...baseNotification,
+    staffId: req.user.businessId
+  });
+
+  // Notify admin (self) if applicable
+  if (req.user.role === "admin") {
+    notifications.push({
+      ...baseNotification,
+      staffId: req.user.id
+    });
+  }
+}
+
+if (notifications.length > 0) {
+  await Notification.insertMany(notifications);
+  console.log(`Marked ${realAppointments.length} appointments as completed. Notifications sent.`);
+}
 
     // 6) Return response:
     res.json({
