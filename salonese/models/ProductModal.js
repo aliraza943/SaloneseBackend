@@ -20,6 +20,12 @@ const ProductSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',
     required: true
+  },
+  stock: {
+    type: Number,
+    required: true,
+    min: 0,
+    default: 0 // ensures product starts with 0 stock unless set otherwise
   }
 }, { timestamps: true });
 

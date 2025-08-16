@@ -8,7 +8,7 @@ const ScheduleSchema = new mongoose.Schema({
         unique: true
     },
     schedule: {
-        type: Object, // Use Object instead of Map
+        type: Object, // Weekly recurring schedule
         default: {
             Monday: null,
             Tuesday: null,
@@ -17,8 +17,22 @@ const ScheduleSchema = new mongoose.Schema({
             Friday: null,
             Saturday: null,
             Sunday: null,
-        }, // Initialize the schedule as an object with null values for each day
+        },
     },
+    exceptionDates: {
+        type: [
+            {
+                date: { type: Date, required: true }, // Specific date for the exception
+                timeSlots: [
+                    {
+                        start: { type: String, required: true }, // e.g., "09:00 AM"
+                        end: { type: String, required: true }   // e.g., "12:00 PM"
+                    }
+                ]
+            }
+        ],
+        default: [] // Not required — empty array if none provided
+    }
 });
 
 module.exports = mongoose.model("Schedule", ScheduleSchema);

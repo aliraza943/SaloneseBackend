@@ -41,6 +41,17 @@ const websiteSchema = new mongoose.Schema({
       fileName: String,
     },
   ],
+  messages: {
+  type: [
+    {
+      text: { type: String, required: true },
+      sentAt: { type: Date, default: Date.now },
+    }
+  ],
+  default: [],
+},
+
+
 
   overlayTexts: [String],
 

@@ -17,6 +17,7 @@ const isSameOrBefore = require('dayjs/plugin/isSameOrBefore');
 dayjs.extend(isSameOrBefore);
 const mongoose = require('mongoose');
 const minMax          = require('dayjs/plugin/minMax');
+const Business = require('../models/WorkingHours'); // adjust the path as needed
 dayjs.extend(minMax);
 const {validateAppointments,createBill,calculateBill} = require('./ValidateAppointments');
 const { createClient } = require('@supabase/supabase-js');
@@ -405,41 +406,212 @@ router.get('/get-services/:siteUrl', async (req, res) => {
     });
   }
 });
-router.post('/get-professionals/:siteUrl', async (req, res) => {
+
+
+
+router.post('/get-availability/:siteUrl', async (req, res) => {
   const { siteUrl } = req.params;
-  const { bookingIds } = req.body;
+  const { selection, date } = req.body;
+  console.log('Received data:', { siteUrl, selection, date });
+
+  if (!date) {
+    return res.status(400).json({ success: false, message: 'Date is required' });
+  }
 
   try {
-    // 1. Find the website
+    // 1) fetch website → businessId
     const website = await Website.findOne({ url: siteUrl });
-
-    if (!website) {
-      return res.status(404).json({ success: false, message: 'Website not found' });
-    }
-
+    if (!website) return res.status(404).json({ success: false, message: 'Website not found' });
     const businessId = website.businessId;
 
-    
-    const professionals = await Staff.find({
-      businessId,
-      role: 'provider',
-      services: { $in: bookingIds.map(id => new mongoose.Types.ObjectId(id)) }
-    }).select('-password -email -phone -role');
-    
+    // 2) preload service durations
+    const allServiceIds = Object.keys(selection);
+    const serviceDocs = await Service.find({ _id: { $in: allServiceIds } });
+    const durations = serviceDocs.reduce((acc, s) => { acc[s._id] = s.duration; return acc; }, {});
 
-    return res.status(200).json({
+    // 3) define time window
+    const startDate = dayjs(date);
+    const endDate = startDate.add(3, 'month');
+
+    // 4) fetch business (lean => plain object)
+    // fetch schedule (or whole doc if you prefer)
+    const business = await Business.findOne({ businessId }, { schedule: 1, exceptionDates: 1, _id: 0 }).lean();
+
+    // --- IMPORTANT: extract the array properly ---
+    // handle both possible shapes:
+    //  - business.schedule.exceptionDates
+    //  - business.exceptionDates
+    const exceptionDates = (business?.schedule?.exceptionDates) || (business?.exceptionDates) || [];
+    console.log('Exception Dates:', JSON.stringify(exceptionDates, null, 2));
+    // ------------------------------------------------
+
+    // 5) fetch existing appointments in the window (upfront)
+    const existing = await Appointment.find({
+      businessId,
+      start: { $gte: startDate.toDate(), $lte: endDate.toDate() }
+    }).lean();
+
+    // build map: staffId (string) -> [appointments]
+    const staffApptsMap = {};
+    for (const a of existing) {
+      const staffKey = (a.staffId || a.providerId || a.provider || a.providerId)?.toString?.() || null;
+      if (!staffKey) continue;
+      staffApptsMap[staffKey] = staffApptsMap[staffKey] || [];
+      staffApptsMap[staffKey].push(a);
+    }
+
+    const overlaps = (s1, e1, s2, e2) =>
+      dayjs(s1).isBefore(dayjs(e2)) && dayjs(e1).isAfter(dayjs(s2));
+
+    const rawSlotsByDay = {};
+
+    // 6) build raw slots & embedded appointments (day-by-day)
+    for (let d = startDate; d.isBefore(endDate); d = d.add(1, 'day')) {
+      const day = d.format('YYYY-MM-DD');
+      const weekday = d.format('dddd');
+
+      const specific = Object.values(selection).filter(v => v !== 'max_availability');
+      const staffList = specific.length
+        ? await Staff.find({ _id: { $in: specific }, businessId, role: 'provider' }).lean()
+        : await Staff.find({ businessId, role: 'provider', services: { $all: allServiceIds } }).lean();
+
+      let ranges = [];
+      staffList.forEach(p => {
+        (p.workingHours?.[weekday] || []).forEach(r => {
+          const [s, e] = r.split(' - ');
+          ranges.push({
+            start: dayjs(`${day} ${s}`, 'YYYY-MM-DD hh:mm A'),
+            end: dayjs(`${day} ${e}`, 'YYYY-MM-DD hh:mm A')
+          });
+        });
+      });
+      ranges.sort((a, b) => a.start - b.start);
+
+      const merged = [];
+      for (const r of ranges) {
+        if (!merged.length || r.start.isAfter(merged[merged.length - 1].end)) {
+          merged.push({ ...r });
+        } else {
+          const last = merged[merged.length - 1];
+          last.end = last.end.isAfter(r.end) ? last.end : r.end;
+        }
+      }
+
+      const totalDur = allServiceIds.reduce((sum, id) => sum + (durations[id] || 0), 0);
+      const slots = [];
+
+      for (const block of merged) {
+        let cursor = block.start;
+        while (!cursor.add(totalDur, 'minute').isAfter(block.end)) {
+          const slotStart = cursor;
+          const slotEnd = cursor.add(totalDur, 'minute');
+
+          let apptCursor = slotStart;
+          const appointments = [];
+
+          for (const serviceId of allServiceIds) {
+            const dur = durations[serviceId] || 0;
+            const segStart = apptCursor;
+            const segEnd = apptCursor.add(dur, 'minute');
+
+            let staffId = null;
+            const sel = selection[serviceId];
+            if (sel !== 'max_availability') staffId = sel;
+
+            appointments.push({
+              serviceId,
+              staffId,
+              start: segStart.toISOString(),
+              end: segEnd.toISOString()
+            });
+
+            apptCursor = segEnd;
+          }
+
+          slots.push({
+            start: slotStart.toISOString(),
+            end: slotEnd.toISOString(),
+            label: slotStart.format('hh:mm A'),
+            duration: totalDur,
+            appointments
+          });
+
+          cursor = cursor.add(15, 'minute');
+        }
+      }
+
+      // Apply exception date rules: note exceptionDates is an ARRAY now
+      const exception = exceptionDates.find(e => dayjs(e.date).format('YYYY-MM-DD') === day);
+
+      let finalSlots = [];
+      if (exception) {
+        if (!exception.timeSlots || !exception.timeSlots.length) {
+          rawSlotsByDay[day] = [];
+          continue;
+        } else {
+          finalSlots = slots.filter(slot => {
+            const slotStart = dayjs(slot.start);
+            const slotEnd = dayjs(slot.end);
+            return exception.timeSlots.some(ts => {
+              const tsStart = dayjs(`${day} ${ts.start}`, 'YYYY-MM-DD HH:mm');
+              const tsEnd = dayjs(`${day} ${ts.end}`, 'YYYY-MM-DD HH:mm');
+              return !slotStart.isBefore(tsStart) && !slotEnd.isAfter(tsEnd);
+            });
+          });
+        }
+      } else {
+        finalSlots = slots;
+      }
+
+      // Filter out per-staff conflicts (same logic as before)
+      const availableAfterStaffChecks = finalSlots.filter(slot => {
+        for (const seg of slot.appointments) {
+          const segStart = seg.start;
+          const segEnd = seg.end;
+
+          if (seg.staffId) {
+            const key = seg.staffId.toString ? seg.staffId.toString() : String(seg.staffId);
+            const apptsForStaff = staffApptsMap[key] || [];
+            const conflicting = apptsForStaff.some(a => overlaps(segStart, segEnd, a.start, a.end));
+            if (conflicting) return false;
+          } else {
+            const candidate = staffList.find(p => {
+              const covers = (p.workingHours?.[weekday] || []).some(rng => {
+                const [ss, ee] = rng.split(' - ');
+                const ws = dayjs(`${day} ${ss}`, 'YYYY-MM-DD hh:mm A');
+                const we = dayjs(`${day} ${ee}`, 'YYYY-MM-DD hh:mm A');
+                return !dayjs(segStart).isBefore(ws) && !dayjs(segEnd).isAfter(we);
+              });
+              if (!covers) return false;
+
+              const key = p._id?.toString ? p._id.toString() : String(p._id);
+              const apptsForP = staffApptsMap[key] || [];
+              const conflict = apptsForP.some(a => overlaps(segStart, segEnd, a.start, a.end));
+              return !conflict;
+            });
+
+            if (!candidate) return false;
+          }
+        }
+        return true;
+      });
+
+      rawSlotsByDay[day] = availableAfterStaffChecks;
+    }
+
+    // 7) respond
+    return res.json({
       success: true,
-      professionals,
+      businessId,
+      availableSlots: rawSlotsByDay
     });
-  } catch (error) {
-    console.error('Error fetching professionals:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch professionals',
-      error: error.message || error,
-    });
+
+  } catch (err) {
+    console.error('Error in get-availability:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+
 
 
 router.post('/get-availability/:siteUrl', async (req, res) => {

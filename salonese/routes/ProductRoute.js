@@ -6,6 +6,7 @@ const manageProductsMiddleware = require("../middleware/manageProductsMiddleware
 const router = express.Router();
 
 // Dummy Products Array
+// Generate dummy products with random stock counts
 const dummyProducts = [
   {
     name: 'Wireless Headphones',
@@ -37,7 +38,10 @@ const dummyProducts = [
     description: 'Fast-charging 10000mAh power bank for mobile devices.',
     businessId: '67b0a6b21a67ef3d1eaa5741',
   },
-];
+].map(product => ({
+  ...product,
+  stocks: Math.floor(Math.random() * 191) + 10, // random int between 10–200
+}));
 
 // Seed Dummy Products Route
 router.post('/seed', async (req, res) => {
@@ -52,14 +56,14 @@ router.post('/seed', async (req, res) => {
 // Create a product
 router.post('/', manageProductsMiddleware, async (req, res) => {
     try {
-      const { name, price, description } = req.body;
+      const { name, price, description,stock } = req.body;
       const businessId = req.user.businessId;
   
       if (!mongoose.Types.ObjectId.isValid(businessId)) {
         return res.status(400).json({ error: 'Invalid businessId' });
       }
   
-      const product = new Product({ name, price, description, businessId });
+      const product = new Product({ name, price, description, businessId,stock });
       await product.save();
       res.status(201).json(product);
     } catch (error) {

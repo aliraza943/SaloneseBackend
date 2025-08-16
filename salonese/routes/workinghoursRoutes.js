@@ -48,6 +48,94 @@ router.put("/update-schedule", authMiddleware(["manage_businessHours"]), async (
         res.status(500).json({ error: "Error updating schedule" });
     }
 });
+router.get("/exceptions", authMiddleware([]), async (req, res) => {
+    try {
+        const schedule = await Schedule.findOne({ businessId: req.user.businessId }, "exceptionDates");
 
+        if (!schedule) {
+            return res.status(404).json({ error: "No schedule found" });
+        }
+
+        res.status(200).json(schedule.exceptionDates || []);
+    } catch (error) {
+        console.error("Error fetching exceptions:", error);
+        res.status(500).json({ error: "Error fetching exceptions" });
+    }
+});
+
+router.post("/exceptions", authMiddleware(["manage_businessHours"]), async (req, res) => {
+    try {
+        const { date, timeSlots } = req.body;
+
+        if (!date) {
+            return res.status(400).json({ error: "Date is required" });
+        }
+
+        // Find schedule
+        let schedule = await Schedule.findOne({ businessId: req.user.businessId });
+
+        if (!schedule) {
+            return res.status(400).json({ error: "Cannot add exception — schedule does not exist yet" });
+        }
+
+        // If exceptions array doesn't exist, initialize it
+        if (!Array.isArray(schedule.exceptionDates)) {
+            schedule.exceptionDates = [];
+        }
+
+        schedule.exceptionDates.push({ date, timeSlots: timeSlots || [] });
+        await schedule.save();
+
+        res.status(201).json({
+            message: "Exception added successfully",
+            exceptionDates: schedule.exceptionDates
+        });
+
+    } catch (error) {
+        console.error("Error adding exception:", error);
+        res.status(500).json({ error: "Error adding exception" });
+    }
+});
+
+
+
+router.delete("/exceptions/:id", authMiddleware(["manage_businessHours"]), async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const schedule = await Schedule.findOne({ businessId: req.user.businessId });
+
+        if (!schedule) {
+            return res.status(404).json({ error: "No schedule found" });
+        }
+
+        schedule.exceptionDates = schedule.exceptionDates.filter(e => e._id.toString() !== id);
+        await schedule.save();
+
+        res.status(200).json({ message: "Exception deleted successfully", exceptionDates: schedule.exceptionDates });
+    } catch (error) {
+        console.error("Error deleting exception:", error);
+        res.status(500).json({ error: "Error deleting exception" });
+    }
+});
+router.delete("/exceptions/:id", authMiddleware(["manage_businessHours"]), async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const schedule = await Schedule.findOne({ businessId: req.user.businessId });
+
+        if (!schedule) {
+            return res.status(404).json({ error: "No schedule found" });
+        }
+
+        schedule.exceptionDates = schedule.exceptionDates.filter(e => e._id.toString() !== id);
+        await schedule.save();
+
+        res.status(200).json({ message: "Exception deleted successfully", exceptionDates: schedule.exceptionDates });
+    } catch (error) {
+        console.error("Error deleting exception:", error);
+        res.status(500).json({ error: "Error deleting exception" });
+    }
+});
 
 module.exports = router; // Export the router using module.exports
