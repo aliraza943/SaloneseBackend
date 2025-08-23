@@ -17,6 +17,7 @@ const squareClient = new Client({
   environment: Environment.Sandbox,
 });
 const paymentsApi = squareClient.paymentsApi;
+const AppointmentHistory = require('../models/AppointmentsHistory');
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -158,6 +159,50 @@ if (appointmentsToInsert.length) {
       method: 'online-portal',
     });
   });
+  try {
+  const trackedFields = [
+    "title", "clientName", "serviceType", "serviceCharges", "start", "end",
+    "clientId", "serviceId", "staffId", "taxesApplied", "totalTax", "totalBill",
+    "serviceName", "description", "status"
+  ];
+
+  const normalizeForHistory = (val) => {
+    if (val === undefined || val === null) return null;
+    if (val instanceof Date) return val.toISOString();
+    if (val && val._bsontype === "ObjectID") return String(val);
+    if (typeof val === "object") return val;
+    return val;
+  };
+
+  // For payments made by a client, mark changedBy as the clientelle record and model as "Client"
+  const changedById = clientelleId || (req.user && (req.user._id || req.user.id)) || null;
+  const changedByModel = "Client";
+
+  const historyEntries = insertedAppointments.map((appt) => {
+    const changes = {};
+    for (const key of trackedFields) {
+      const newVal = appt[key] !== undefined ? appt[key] : null;
+      changes[key] = {
+        old: null,
+        new: normalizeForHistory(newVal),
+      };
+    }
+    return {
+      appointmentId: appt._id,
+      changedBy: changedById,
+      changedByModel,
+      action: "created",
+      changes,
+      note: "Appointment created via online payment flow",
+      createdAt: new Date(),
+    };
+  });
+
+  await AppointmentHistory.insertMany(historyEntries);
+  console.log(`Created ${historyEntries.length} appointment history records for paid appointments.`);
+} catch (historyErr) {
+  console.error("Failed to create appointment history entries:", historyErr);
+}
 
   // 6b) Notify all frontdesk staff in the business
   const frontdeskStaff = await Staff.find(

@@ -16,6 +16,8 @@ const BillComplete = require("../models/BillComplete");
 const authenticateToken = require('../middleware/markAsCompleteMiddleware');
 const Notification = require("../models/notifications"); // Import Notification model
 const Product = require("../models/ProductModal");
+const AppointmentHistory = require("../models/AppointmentsHistory");
+const StaffHistory = require("../models/StaffHistory");
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -28,52 +30,65 @@ const storage = multer.diskStorage({
   const upload = multer({ storage });
 
 
-  router.post(
-    "/add",
-    authMiddleware(["manage_staff"]),
-    upload.single("image"), // Handles file upload
-    async (req, res) => {
-      try {
-        const { name, email, phone, role, workingHours } = req.body;
-        const permissions = JSON.parse(req.body.permissions || "[]");
-        const services = JSON.parse(req.body.services || "[]");
-  
-        if (!name || !email || !phone || !role) {
-          return res.status(400).json({ message: "All fields are required!" });
-        }
-  
-        // Only admin can add a frontdesk staff
-        if (role === "frontdesk" && req.user.role !== "admin") {
-          return res
-            .status(403)
-            .json({ message: "Only an admin can add a front desk staff." });
-        }
-  
-        // Handle uploaded image
-        const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
-  
-        const newStaff = new Staff({
-          name,
-          email,
-          phone,
-          role,
-          workingHours: role === "provider" ? workingHours : null,
-          permissions: role === "frontdesk" ? permissions : [],
-          password: "password123",
-          businessId: req.user.businessId,
-          services: role === "provider" ? services : [],
-          image: imageUrl,
-        });
-  
-        await newStaff.save();
-  
-        res.status(201).json({ message: "Staff added successfully!", newStaff });
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server Error", error });
+ router.post(
+  "/add",
+  authMiddleware(["manage_staff"]),
+  upload.single("image"), // Handles file upload
+  async (req, res) => {
+    try {
+      const { name, email, phone, role, workingHours } = req.body;
+      const permissions = JSON.parse(req.body.permissions || "[]");
+      const services = JSON.parse(req.body.services || "[]");
+
+      if (!name || !email || !phone || !role) {
+        return res.status(400).json({ message: "All fields are required!" });
       }
+
+      // Only admin can add a frontdesk staff
+      if (role === "frontdesk" && req.user.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Only an admin can add a front desk staff." });
+      }
+
+      // Handle uploaded image
+      const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
+      const newStaff = new Staff({
+        name,
+        email,
+        phone,
+        role,
+        workingHours: role === "provider" ? workingHours : null,
+        permissions: role === "frontdesk" ? permissions : [],
+        password: "password123", // default password (should be forced to reset later)
+        businessId: req.user.businessId,
+        services: role === "provider" ? services : [],
+        image: imageUrl,
+      });
+
+      await newStaff.save();
+
+      // --- Log staff creation in StaffHistory ---
+      await StaffHistory.create({
+        staffId: newStaff._id,
+        changedBy: req.user.id,
+        changedByModel: req.user.role === "admin" ? "BusinessOwner" : "Staff",
+        changes: {
+          created: newStaff.toObject(), // save full initial state
+        },
+      });
+
+      res.status(201).json({
+        message: "Staff added successfully!",
+        newStaff,
+      });
+    } catch (error) {
+      console.error("Error adding staff:", error);
+      res.status(500).json({ message: "Server Error", error });
     }
-  );
+  }
+);
   
 
 
@@ -144,6 +159,7 @@ router.put(
         return res.status(403).json({ message: "Unauthorized to update this staff member." });
       }
 
+      const originalData = staff.toObject(); // snapshot before update
       const originalRole = staff.role;
       const originalPermissions = staff.permissions;
 
@@ -162,7 +178,6 @@ router.put(
         const imageUrl = `/uploads/${req.file.filename}`;
         staff.image = imageUrl;
       }
-      
 
       // Admin role logic
       if (req.user.role === "admin") {
@@ -181,6 +196,29 @@ router.put(
       }
 
       await staff.save();
+
+      // --- 🔥 Track changes for history ---
+      const updatedData = staff.toObject();
+      const changes = {};
+      for (const key of Object.keys(updatedData)) {
+        if (
+          JSON.stringify(updatedData[key]) !== JSON.stringify(originalData[key])
+        ) {
+          changes[key] = {
+            from: originalData[key],
+            to: updatedData[key],
+          };
+        }
+      }
+
+      if (Object.keys(changes).length > 0) {
+        await StaffHistory.create({
+          staffId: staff._id,
+          changedBy: req.user.id,
+          changedByModel: req.user.role === "admin" ? "BusinessOwner" : "Staff",
+          changes,
+        });
+      }
 
       // Invalidate tokens if role/permissions changed
       if (
@@ -226,41 +264,62 @@ router.put(
 
 
 
-
 router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
-    try {
-        // Validate that the staff ID is a valid MongoDB ObjectId
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ message: "Invalid Staff ID format!" });
-        }
-
-        // Find the staff member by ID
-        const staff = await Staff.findById(req.params.id);
-        if (!staff) {
-            return res.status(404).json({ message: "Staff member not found!" });
-        }
-
-        // Check if the staff's businessId matches the requester's businessId
-        if (staff.businessId.toString() !== req.user.businessId.toString()) {
-            return res.status(403).json({ message: "Unauthorized to delete this staff member." });
-        }
-
-        // Additional check: if the staff being deleted is 'front desk', only an admin can delete them
-        if (staff.role === "front desk" && req.user.role !== "admin") {
-            return res.status(403).json({ message: "Only admin can delete front desk staff." });
-        }
-
-        // Delete the staff member
-        await Staff.findByIdAndDelete(req.params.id);
-
-        // Invalidate tokens for this user by marking them as not valid
-        await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false }});
-
-        res.json({ message: "Staff member deleted and tokens invalidated successfully!" });
-    } catch (error) {
-        console.error("Delete Error:", error);
-        res.status(500).json({ message: "Server Error", error: error.message });
+  try {
+    // Validate that the staff ID is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: "Invalid Staff ID format!" });
     }
+
+    // Find the staff member by ID
+    const staff = await Staff.findById(req.params.id);
+    if (!staff) {
+      return res.status(404).json({ message: "Staff member not found!" });
+    }
+
+    // Check if the staff's businessId matches the requester's businessId
+    if (staff.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ message: "Unauthorized to delete this staff member." });
+    }
+
+    // Additional check: if the staff being deleted is 'front desk', only an admin can delete them
+    if (staff.role === "front desk" && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Only admin can delete front desk staff." });
+    }
+
+    // --- 🔥 Log deletion in history BEFORE deleting ---
+    await StaffHistory.create({
+      staffId: staff._id,
+      changedBy: req.user.id,
+      changedByModel: req.user.role === "admin" ? "BusinessOwner" : "Staff",
+      changes: {
+        deleted: {
+          from: {
+            name: staff.name,
+            email: staff.email,
+            phone: staff.phone,
+            role: staff.role,
+            permissions: staff.permissions,
+            services: staff.services,
+            workingHours: staff.workingHours,
+            businessId: staff.businessId,
+          },
+          to: null,
+        },
+      },
+    });
+
+    // Delete the staff member
+    await Staff.findByIdAndDelete(req.params.id);
+
+    // Invalidate tokens for this user by marking them as not valid
+    await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false } });
+
+    res.json({ message: "Staff member deleted, history logged, and tokens invalidated successfully!" });
+  } catch (error) {
+    console.error("Delete Error:", error);
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
 });
 
 
@@ -438,6 +497,29 @@ router.post("/appointments/add", AppointmentEditMiddleware, async (req, res) => 
         });
 
         await newAppointment.save();
+        await AppointmentHistory.create({
+            appointmentId: newAppointment._id,
+            changedBy: req.user.id,
+            changedByModel: req.user.role === "admin" ? "BusinessOwner" : "Staff",
+            action: "created",
+            note: `Appointment created by ${req.user.role}`,
+            changes: {
+                staffId: { old: null, new: staffId },
+                clientId: { old: null, new: clientId },
+                clientName: { old: null, new: clientName },
+                serviceId: { old: null, new: serviceId },
+                serviceName: { old: null, new: service.name },
+                serviceType: { old: null, new: serviceType },
+                start: { old: null, new: start },
+                end: { old: null, new: end },
+                status: { old: null, new: "booked" },
+                serviceCharges: { old: null, new: price },
+                totalTax: { old: null, new: totalTax },
+                totalBill: { old: null, new: totalBill },
+                description: { old: null, new: description }
+            }
+        });
+
      
 
 // 🔔 If booked by provider → notify provider himself
@@ -694,23 +776,51 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
     console.log("MIDDLEWARE PASSED");
 
     try {
-        const result = await Appointments.updateOne(
-            { staffId, start, end },
-            { $set: { status: "cancelled" } }
-        );
-
-        if (result.modifiedCount === 0) {
+        // Find the appointment first so we can capture previous state for history
+        const appointment = await Appointments.findOne({ staffId, start, end });
+        if (!appointment) {
             return res.status(404).json({ message: "No matching appointment found" });
         }
 
-        const cancelledAppointment = await Appointments.findOne({ staffId, start, end });
+        // Save old state for history
+        const oldValues = appointment.toObject();
 
-        if (!cancelledAppointment) {
-            return res.status(404).json({ message: "Cancelled appointment not found" });
+        // Mark as cancelled and save
+        appointment.status = "cancelled";
+        await appointment.save();
+
+        // Create history entry for cancellation
+        try {
+            // map req.user.role to changedByModel enum in AppointmentHistory
+            const role = (req.user && req.user.role) ? req.user.role : "staff";
+            let changedByModel = "Staff";
+            if (role === "businessOwner" || role === "owner") changedByModel = "BusinessOwner";
+            else if (role === "client") changedByModel = "Client";
+            else changedByModel = "Staff";
+
+            const changes = {
+                status: {
+                    old: oldValues.status || null,
+                    new: "cancelled"
+                }
+            };
+
+            await AppointmentHistory.create({
+                appointmentId: appointment._id,
+                changedBy: req.user.id,
+                changedByModel,
+                action: "cancelled",
+                changes,
+                note: "Appointment cancelled via API"
+            });
+        } catch (histErr) {
+            console.error("Failed to write appointment history:", histErr);
+            // don't fail the whole request if history write fails; continue to notify
         }
 
-        const service = await Services.findById(cancelledAppointment.serviceId);
-        const clientName = cancelledAppointment.clientName;
+        // Build notifications (same pattern as before)
+        const service = await Services.findById(appointment.serviceId);
+        const clientName = appointment.clientName;
 
         const frontdesks = await Staff.find({
             businessId: req.user.businessId,
@@ -724,11 +834,11 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
             businessId: req.user.businessId,
             method: "",
             type: "appointment-cancelled",
-            appointmentId: cancelledAppointment._id,
-            clientId: cancelledAppointment.clientId,
+            appointmentId: appointment._id,
+            clientId: appointment.clientId,
             clientName,
             serviceName: service?.name,
-            serviceId: cancelledAppointment.serviceId,
+            serviceId: appointment.serviceId,
             start,
             end,
             seen: false,
@@ -803,7 +913,7 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
             frontdesks.forEach(fd => {
                 notifications.push({
                     ...baseNotification,
-                    staffId: fd._id
+                    staffId: fd._1
                 });
             });
 
@@ -826,7 +936,7 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
             await Notification.insertMany(notifications);
         }
 
-        res.status(200).json({ message: "Appointment status changed to 'cancelled'" });
+        res.status(200).json({ message: "Appointment status changed to 'cancelled'", appointment });
 
     } catch (error) {
         console.error("Error cancelling appointment:", error);
@@ -836,137 +946,189 @@ router.delete("/appointments/delete", AppointmentMiddleware, async (req, res) =>
 
 
 
-router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
-    try {
-        const { id } = req.params;
-        var { title, clientName, serviceType, serviceCharges, start, end, staffId, clientId, serviceId,description } = req.body;
-        console.log(staffId);
+// File: appointments_put_with_logs.js
+// NOTE: If you haven't already, add `const util = require('util');` near the top of the file where you import other modules.
 
-        console.log("This is the client ID:", staffId);
+router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
+    // helpful inspector for deep objects
+    const util = require('util');
+    const inspect = (obj) => util.inspect(obj, { depth: null, colors: false });
+
+    try {
+        console.log('\n===== ENTER PUT /appointments/:id =====');
+        console.log('req.user:', inspect(req.user));
+        console.log('req.params:', inspect(req.params));
+        console.log('req.body:', inspect(req.body));
+
+        const { id } = req.params;
+        let { title, clientName, serviceType, serviceCharges, start, end, staffId, clientId, serviceId, description } = req.body;
+
+        console.log('raw staffId from payload:', inspect(staffId));
+
+        // normalize staffId if object
         if (staffId && typeof staffId === "object" && staffId._id) {
             staffId = staffId._id;
+            console.log('normalized staffId from object to string/id:', staffId);
         }
 
+        // basic validation
         if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.log('Validation failed: invalid appointment id format', id);
             return res.status(400).json({ message: "Invalid appointment ID format!" });
         }
 
         if (!staffId || !mongoose.Types.ObjectId.isValid(staffId)) {
+            console.log('Validation failed: invalid staffId', staffId);
             return res.status(400).json({ message: "Invalid staff ID format!" });
         }
 
+        if (!start || !end) {
+            console.log('Validation failed: missing start or end', { start, end });
+            return res.status(400).json({ message: "Start and end times are required!" });
+        }
         if (start === end) {
+            console.log('Validation failed: start === end', start);
             return res.status(400).json({ message: "Start time and end time cannot be the same!" });
         }
 
-        // Find the appointment
+        // find appointment
+        console.log('Looking up appointment by id:', id);
         const appointment = await Appointments.findById(id);
+        console.log('Found appointment:', appointment ? inspect(appointment.toObject()) : appointment);
         if (!appointment) {
+            console.log('Appointment not found for id:', id);
             return res.status(404).json({ message: "Appointment not found!" });
         }
 
-        // Find the staff member
+        // Save old values for history comparison
+        const oldValues = appointment.toObject();
+        console.log('Old appointment values saved for history comparison');
+
+        // find staff
+        console.log('Looking up staff by id:', staffId);
         const staff = await Staff.findById(staffId);
+        console.log('Found staff:', staff ? inspect(staff.toObject()) : staff);
         if (!staff) {
+            console.log('Staff member not found for id:', staffId);
             return res.status(404).json({ message: "Staff member not found!" });
         }
 
         if (staff.role !== "provider" || !staff.workingHours) {
+            console.log('Staff role or workingHours invalid', { role: staff.role, workingHours: staff.workingHours });
             return res.status(400).json({ message: "This staff member cannot have appointments!" });
         }
 
+        // working hours check
         const workingHours = staff.workingHours;
         const startTime = new Date(start);
         const endTime = new Date(end);
+        console.log('Parsed startTime and endTime:', { startTime: startTime.toISOString(), endTime: endTime.toISOString() });
+
         const weekday = startTime.toLocaleString("en-US", { weekday: "long" });
+        console.log('Computed weekday from startTime:', weekday);
 
         if (!workingHours[weekday] || workingHours[weekday].length === 0) {
+            console.log(`Staff does not work on ${weekday}. workingHours for that day:`, inspect(workingHours[weekday]));
             return res.status(400).json({ message: `Staff does not work on ${weekday}` });
         }
 
         const availableSlots = workingHours[weekday].map(slot => {
             const [startStr, endStr] = slot.split(" - ");
+            const slotStart = new Date(startTime.toDateString() + " " + startStr);
+            const slotEnd = new Date(startTime.toDateString() + " " + endStr);
             return {
-                start: new Date(startTime.toDateString() + " " + startStr),
-                end: new Date(startTime.toDateString() + " " + endStr),
+                start: slotStart,
+                end: slotEnd,
+                raw: slot
             };
         });
+
+        console.log('Available slots for the weekday:', availableSlots.map(s => ({ raw: s.raw, start: s.start.toISOString(), end: s.end.toISOString() })));
 
         const isWithinWorkingHours = availableSlots.some(slot =>
             startTime >= slot.start && endTime <= slot.end
         );
 
+        console.log('Is requested appointment within working hours?', isWithinWorkingHours);
+
         if (!isWithinWorkingHours) {
+            console.log('Requested time not within working hours. requested:', { start: startTime.toISOString(), end: endTime.toISOString() });
             return res.status(400).json({
                 message: `Appointment must be within working hours: ${workingHours[weekday].join(", ")}`
             });
         }
 
-        // Only check for conflicting appointments with status "booked"
+        // check for conflicting booked appointments (use Date objects)
+        console.log('Checking for conflicting appointments for staffId, excluding id:', staffId, id);
         const conflictingAppointment = await Appointments.findOne({
             staffId,
             _id: { $ne: id },
             status: "booked",
             $or: [
-                { start: { $lt: end }, end: { $gt: start } }
+                { start: { $lt: endTime }, end: { $gt: startTime } }
             ]
         });
 
+        console.log('Conflicting appointment result:', conflictingAppointment ? inspect(conflictingAppointment.toObject()) : conflictingAppointment);
+
         if (conflictingAppointment) {
+            console.log('Conflict detected with appointment:', conflictingAppointment._id);
             return res.status(400).json({
                 message: `This staff already has an appointment from ${conflictingAppointment.start} to ${conflictingAppointment.end}.`
             });
         }
 
-        // Fetch service details
+        // Fetch service details (use provided serviceId or old appointment service)
+        console.log('Fetching service details using serviceId:', serviceId || appointment.serviceId);
         const service = await Services.findById(serviceId || appointment.serviceId);
+        console.log('Found service:', service ? inspect(service.toObject()) : service);
         if (!service) {
+            console.log('Service not found for id:', serviceId || appointment.serviceId);
             return res.status(404).json({ message: "Service not found!" });
         }
 
         const price = serviceCharges || service.price;
-        console.log("SERVICE PRICE:", price);
+        console.log('Price selected for appointment:', price);
 
-        // Fetch the business owner's province using req.user.businessId
+        // Fetch business owner to get province
+        console.log('Fetching BusinessOwner for businessId:', req.user.businessId);
         const businessOwner = await BusinessOwner.findOne({ businessId: req.user.businessId });
+        console.log('Found businessOwner:', businessOwner ? inspect(businessOwner.toObject()) : businessOwner);
         if (!businessOwner) {
+            console.log('Business owner not found for businessId:', req.user.businessId);
             return res.status(404).json({ message: "Business owner not found!" });
         }
         if (!businessOwner.province) {
+            console.log('Business owner has no province set:', inspect(businessOwner));
             return res.status(400).json({ message: "No province found for this business owner!" });
         }
         const province = businessOwner.province;
-        console.log("BUSINESS PROVINCE:", province);
+        console.log('Business province:', province);
 
-        // Get applicable taxes for the province
+        // Get applicable taxes
         const taxes = taxData[province] || {};
-        console.log("APPLICABLE TAXES:", taxes);
+        console.log('Tax rates for province:', taxes);
 
-        // Calculate tax details
+        // Calculate taxes
         let totalTax = 0;
         let taxesApplied = [];
 
         for (const type in taxes) {
             const taxRate = taxes[type];
             const taxAmount = taxRate * price;
-
             taxesApplied.push({
                 taxType: type,
                 percentage: taxRate,
                 amount: taxAmount
             });
-
-            console.log(`${type}: ${taxRate * 100}% -> $${taxAmount.toFixed(2)}`);
             totalTax += taxAmount;
+            console.log(`Applied tax ${type}: rate=${taxRate}, amount=${taxAmount}`);
         }
 
-        console.log("TOTAL TAX:", totalTax.toFixed(2));
-
-        // Calculate total bill (price + tax)
         const totalBill = price + totalTax;
-        console.log("TOTAL BILL:", totalBill.toFixed(2));
+        console.log('Tax summary:', { taxesApplied, totalTax, totalBill });
 
-        // Update appointment fields
+        // Update appointment fields (include staffId assignment)
         appointment.title = title || appointment.title;
         appointment.clientName = clientName || appointment.clientName;
         appointment.serviceType = serviceType || appointment.serviceType;
@@ -975,137 +1137,156 @@ router.put("/appointments/:id", AppointmentMiddleware, async (req, res) => {
         appointment.end = endTime;
         appointment.clientId = clientId || appointment.clientId;
         appointment.serviceId = serviceId || appointment.serviceId;
+        appointment.staffId = staffId; // ensure staffId is updated
         appointment.taxesApplied = taxesApplied;
         appointment.totalTax = totalTax;
         appointment.totalBill = totalBill;
         appointment.serviceName = service.name;
-        appointment.description = description|| appointment.description;
+        appointment.description = description || appointment.description;
+
+        console.log('Appointment object before save:', inspect(appointment.toObject()));
 
         // Save the updated appointment
         await appointment.save();
-        // Fetch all frontdesks
-// 🔔 Fetch all frontdesks
-const frontdesks = await Staff.find({
-    businessId: req.user.businessId,
-    role: "frontdesk"
-});
+        console.log('Appointment saved to DB successfully with id:', appointment._id);
 
-const notifications = [];
+        // Build history "changes" comparing tracked fields (converting ObjectIds & Dates sensibly)
+        const newValues = appointment.toObject();
 
-// 🔔 Shared notification base
-const baseNotification = {
-    businessId: req.user.businessId,
-    type: "appointment-updated",
-    appointmentId: appointment._id,
-    clientId: appointment.clientId,
-    clientName: appointment.clientName,
-    serviceName: appointment.serviceName,
-    serviceId: appointment.serviceId,
-    start: appointment.start,
-    end: appointment.end,
-    seen: false,
-    createdAt: new Date()
-};
+        const trackedFields = [
+            "title", "clientName", "serviceType", "serviceCharges", "start", "end",
+            "clientId", "serviceId", "staffId", "taxesApplied", "totalTax", "totalBill",
+            "serviceName", "description", "status"
+        ];
 
-if (req.user.role === "provider") {
-    baseNotification.method = "Provider Update";
+        const changes = {};
+        const normalize = (val) => {
+            if (val === undefined) return null;
+            if (val === null) return null;
+            if (val instanceof Date) return val.toISOString();
+            if (typeof val === "object" && val._id) return String(val._id);
+            if (typeof val === "object" && val.toString && val.constructor && val.constructor.name === "Object") return val;
+            return val;
+        };
 
-    // Notify provider
-    notifications.push({
-        ...baseNotification,
-        staffId: req.user.id
-    });
+        for (const key of trackedFields) {
+            const oldVal = oldValues[key] !== undefined ? oldValues[key] : null;
+            const newVal = newValues[key] !== undefined ? newValues[key] : null;
 
-    // Notify frontdesks
-    frontdesks.forEach(fd => {
-        notifications.push({
-            ...baseNotification,
-            staffId: fd._id
+            let a = oldVal, b = newVal;
+
+            // Normalize ObjectIds and Dates for comparison
+            if (a instanceof mongoose.Types.ObjectId) a = String(a);
+            if (b instanceof mongoose.Types.ObjectId) b = String(b);
+            if (a instanceof Date) a = a.toISOString();
+            if (b instanceof Date) b = b.toISOString();
+
+            // For nested objects/arrays (taxesApplied), stringify for safe comparison
+            const aStr = (typeof a === "object" && a !== null) ? JSON.stringify(a) : String(a);
+            const bStr = (typeof b === "object" && b !== null) ? JSON.stringify(b) : String(b);
+
+            if (aStr !== bStr) {
+                changes[key] = {
+                    old: normalize(oldVal),
+                    new: normalize(newVal)
+                };
+            }
+        }
+
+        console.log('Computed changes for history:', inspect(changes));
+
+        // Only create AppointmentHistory if there are changes
+        if (Object.keys(changes).length > 0) {
+            // map req.user.role to changedByModel enum in AppointmentHistory
+            // Adjust role names to match your auth system if different
+            const role = (req.user && req.user.role) ? req.user.role : "staff";
+            let changedByModel = "Staff";
+            if (role === "businessOwner" || role === "owner") changedByModel = "BusinessOwner";
+            else if (role === "client") changedByModel = "Client";
+            else changedByModel = "Staff";
+
+            console.log('Creating AppointmentHistory entry:', { appointmentId: appointment._id, changedBy: req.user.id, changedByModel, changes });
+
+            await AppointmentHistory.create({
+                appointmentId: appointment._id,
+                changedBy: req.user.id,
+                changedByModel,
+                action: "updated",
+                changes,
+                note: "Appointment updated via API"
+            });
+
+            console.log('AppointmentHistory created');
+        } else {
+            console.log('No meaningful changes detected, skipping AppointmentHistory creation');
+        }
+
+        // Notifications (unchanged logic, fetched frontdesks)
+        console.log('Finding frontdesks for businessId:', req.user.businessId);
+        const frontdesks = await Staff.find({
+            businessId: req.user.businessId,
+            role: "frontdesk"
         });
-    });
+        console.log('Frontdesks found:', inspect(frontdesks));
 
-    // 🔔 Notify business owner
-    notifications.push({
-        ...baseNotification,
-        staffId: req.user.businessId
-    });
+        const notifications = [];
+        const baseNotification = {
+            businessId: req.user.businessId,
+            type: "appointment-updated",
+            appointmentId: appointment._id,
+            clientId: appointment.clientId,
+            clientName: appointment.clientName,
+            serviceName: appointment.serviceName,
+            serviceId: appointment.serviceId,
+            start: appointment.start,
+            end: appointment.end,
+            seen: false,
+            createdAt: new Date()
+        };
 
-    console.log(`Provider → Notified self, ${frontdesks.length} frontdesks, and business owner.`);
-}
+        console.log('Building notifications based on req.user.role:', req.user.role);
 
-if (req.user.role === "frontdesk") {
-    baseNotification.method = "Frontdesk Update";
+        if (req.user.role === "provider") {
+            baseNotification.method = "Provider Update";
+            notifications.push({ ...baseNotification, staffId: req.user.id });
+            frontdesks.forEach(fd => notifications.push({ ...baseNotification, staffId: fd._id }));
+            notifications.push({ ...baseNotification, staffId: req.user.businessId });
+        }
 
-    // Notify provider
-    notifications.push({
-        ...baseNotification,
-        staffId: appointment.staffId
-    });
+        if (req.user.role === "frontdesk") {
+            baseNotification.method = "Frontdesk Update";
+            notifications.push({ ...baseNotification, staffId: appointment.staffId });
+            frontdesks.forEach(fd => notifications.push({ ...baseNotification, staffId: fd._id }));
+            notifications.push({ ...baseNotification, staffId: req.user.businessId });
+        }
 
-    // Notify frontdesks
-    frontdesks.forEach(fd => {
-        notifications.push({
-            ...baseNotification,
-            staffId: fd._id
-        });
-    });
+        if (req.user.role === "admin") {
+            baseNotification.method = "Admin Update";
+            notifications.push({ ...baseNotification, staffId: appointment.staffId });
+            frontdesks.forEach(fd => notifications.push({ ...baseNotification, staffId: fd._id }));
+            notifications.push({ ...baseNotification, staffId: req.user.id });
+            notifications.push({ ...baseNotification, staffId: req.user.businessId });
+        }
 
-    // 🔔 Notify business owner
-    notifications.push({
-        ...baseNotification,
-        staffId: req.user.businessId
-    });
+        console.log('Final notifications array length:', notifications.length);
+        console.log('Sample notifications (first 5):', inspect(notifications.slice(0, 5)));
 
-    console.log(`Frontdesk → Notified provider, ${frontdesks.length} frontdesks, and business owner.`);
-}
+        if (notifications.length > 0) {
+            await Notification.insertMany(notifications);
+            console.log(`${req.user.role} updated appointment. Notifications sent.`);
+        }
 
-if (req.user.role === "admin") {
-    baseNotification.method = "Admin Update";
-
-    // Notify provider
-    notifications.push({
-        ...baseNotification,
-        staffId: appointment.staffId
-    });
-
-    // Notify frontdesks
-    frontdesks.forEach(fd => {
-        notifications.push({
-            ...baseNotification,
-            staffId: fd._id
-        });
-    });
-
-    // Notify admin himself
-    notifications.push({
-        ...baseNotification,
-        staffId: req.user.id
-    });
-
-    // 🔔 Notify business owner
-    notifications.push({
-        ...baseNotification,
-        staffId: req.user.businessId
-    });
-
-    console.log(`Admin → Notified provider, ${frontdesks.length} frontdesks, self, and business owner.`);
-}
-
-// Insert notifications
-if (notifications.length > 0) {
-    await Notification.insertMany(notifications);
-    console.log(`${req.user.role} updated appointment. Notifications sent.`);
-}
-
-
-
-        res.json({ message: "Appointment updated successfully!", appointment });
+        console.log('===== EXIT PUT /appointments/:id SUCCESS =====\n');
+        return res.json({ message: "Appointment updated successfully!", appointment });
 
     } catch (error) {
-        console.error("Appointment Update Error:", error);
-        res.status(500).json({ message: "Server Error", error: error.message });
+        console.error('Appointment Update Error (caught):', error.stack || error);
+        return res.status(500).json({ message: "Server Error", error: error.message });
     }
 });
+
+
+
 
 
 
@@ -1350,6 +1531,15 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
 
     const newIds = createdNew.filter(Boolean).map((a) => a._id);
 
+    // ------------- Fetch old states for existing appointments BEFORE we update them -------------
+    const existingOldMap = {}; // { id: { status, billId } }
+    if (existingIds.length > 0) {
+      const existingDocs = await Appointments.find({ _id: { $in: existingIds } }).lean();
+      existingDocs.forEach((d) => {
+        existingOldMap[String(d._id)] = { status: d.status || null, billId: d.billId || null };
+      });
+    }
+
     // ------------- Update existing appointments' status -------------
     if (existingIds.length > 0) {
       await Appointments.updateMany(
@@ -1374,6 +1564,60 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
         { _id: { $in: toBackfill } },
         { $set: { billId: bill._id } }
       );
+    }
+
+    // ------------- Create AppointmentHistory entries for completed appointments -------------
+    try {
+      const historyDocs = [];
+
+      // helper to map role -> changedByModel
+      const mapChangedByModel = (role) => {
+        if (!role) return "Staff";
+        const r = role.toString().toLowerCase();
+        if (r === "businessowner" || r === "owner" || r === "business_owner") return "BusinessOwner";
+        if (r === "client") return "Client";
+        return "Staff"; // provider, frontdesk, admin, default to Staff
+      };
+
+      // existing appointments: record old status -> completed and old billId -> new billId
+      for (const id of existingIds) {
+        const old = existingOldMap[String(id)] || { status: null, billId: null };
+        historyDocs.push({
+          appointmentId: id,
+          changedBy: req.user.id,
+          changedByModel: mapChangedByModel(req.user.role),
+          action: "completed",
+          changes: {
+            status: { old: old.status, new: "completed" },
+            billId: { old: old.billId || null, new: String(bill._id) }
+          },
+          note: "Appointment marked as completed via bill"
+        });
+      }
+
+      // newly created appointments (saved above) - create history entries (old = null)
+      for (const saved of createdNew.filter(Boolean)) {
+        historyDocs.push({
+          appointmentId: saved._id,
+          changedBy: req.user.id,
+          changedByModel: mapChangedByModel(req.user.role),
+          action: "completed",
+          changes: {
+            status: { old: null, new: "completed" },
+            billId: { old: null, new: String(bill._id) }
+          },
+          note: "New appointment created and marked as completed via bill"
+        });
+      }
+
+      if (historyDocs.length > 0) {
+        // insertMany is fine here; failures will be caught below
+        await AppointmentHistory.insertMany(historyDocs);
+        console.log(`Inserted ${historyDocs.length} appointment history entries for completion.`);
+      }
+    } catch (histErr) {
+      console.error("Failed to write appointment history entries for completion:", histErr);
+      // proceed — history failing shouldn't break the whole flow
     }
 
     // ------------- Notifications -------------
@@ -1447,6 +1691,7 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
     return res.status(500).json({ message: "Server error", error: err.message });
   }
 });
+
 
 
 
