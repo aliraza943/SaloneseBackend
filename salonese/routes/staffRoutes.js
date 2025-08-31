@@ -18,6 +18,8 @@ const Notification = require("../models/notifications"); // Import Notification 
 const Product = require("../models/ProductModal");
 const AppointmentHistory = require("../models/AppointmentsHistory");
 const StaffHistory = require("../models/StaffHistory");
+const ProductSold = require("../models/productsSold");
+
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -1336,6 +1338,42 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
       }
     });
 
+    // --- Query DB for existing appointments, validate status BEFORE doing anything else ---
+    const existingOldMap = {}; // will be filled and reused later for history
+    if (existingIds.length > 0) {
+      const existingDocs = await Appointments.find({ _id: { $in: existingIds } })
+        .select("_id status title clientName billId")
+        .lean();
+
+      // any requested ids not found?
+      const foundIds = new Set(existingDocs.map((d) => String(d._id)));
+      const notFound = existingIds.filter((id) => !foundIds.has(String(id)));
+      if (notFound.length > 0) {
+        return res.status(400).json({ message: "Some appointments not found", notFound });
+      }
+
+      // any cancelled?
+      const cancelled = existingDocs.filter(
+        (d) => String(d.status || "").toLowerCase() === "cancelled"
+      );
+      if (cancelled.length > 0) {
+        return res.status(400).json({
+          message: "Cannot complete cancelled appointments",
+          cancelledAppointments: cancelled.map((c) => ({
+            _id: c._id,
+            title: c.title,
+            clientName: c.clientName,
+            status: c.status,
+          })),
+        });
+      }
+
+      // fill map for history logging (re-use these docs instead of re-querying later)
+      existingDocs.forEach((d) => {
+        existingOldMap[String(d._id)] = { status: d.status || null, billId: d.billId || null };
+      });
+    }
+
     // ------------- Totals -------------
     const totalApptAmt = appointments.reduce(
       (sum, a) => sum + (a.totalBill || 0) * (a.quantity || 1),
@@ -1361,7 +1399,9 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
     const prodIds = Object.keys(qtyByProductId);
     if (prodIds.length > 0) {
       // Fetch product docs
-      const dbProds = await Product.find({ _id: { $in: prodIds } }).select("_id stock name").lean();
+      const dbProds = await Product.find({ _id: { $in: prodIds } })
+        .select("_id stock name")
+        .lean();
 
       // Check for missing products
       const notFound = prodIds.filter(
@@ -1376,7 +1416,12 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
       for (const d of dbProds) {
         const reqQty = qtyByProductId[d._id.toString()] || 0;
         if ((d.stock || 0) < reqQty) {
-          insufficient.push({ productId: d._id, name: d.name || null, available: d.stock || 0, requested: reqQty });
+          insufficient.push({
+            productId: d._id,
+            name: d.name || null,
+            available: d.stock || 0,
+            requested: reqQty,
+          });
         }
       }
       if (insufficient.length > 0) {
@@ -1399,7 +1444,9 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
           // failed to decrement (concurrent change likely). gather current stock and throw to rollback.
           const prodDoc = await Product.findById(prodId).select("_id stock name").lean();
           const available = prodDoc ? prodDoc.stock : 0;
-          throw new Error(`Insufficient stock for product ${prodId} (available ${available}, requested ${totalQty})`);
+          throw new Error(
+            `Insufficient stock for product ${prodId} (available ${available}, requested ${totalQty})`
+          );
         }
 
         decremented.push({ productId: prodId, qty: totalQty });
@@ -1531,39 +1578,60 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
 
     const newIds = createdNew.filter(Boolean).map((a) => a._id);
 
-    // ------------- Fetch old states for existing appointments BEFORE we update them -------------
-    const existingOldMap = {}; // { id: { status, billId } }
-    if (existingIds.length > 0) {
-      const existingDocs = await Appointments.find({ _id: { $in: existingIds } }).lean();
-      existingDocs.forEach((d) => {
-        existingOldMap[String(d._id)] = { status: d.status || null, billId: d.billId || null };
-      });
-    }
-
     // ------------- Update existing appointments' status -------------
     if (existingIds.length > 0) {
-      await Appointments.updateMany(
-        { _id: { $in: existingIds } },
-        { $set: { status: "completed" } }
-      );
+      await Appointments.updateMany({ _id: { $in: existingIds } }, { $set: { status: "completed" } });
     }
 
     // ------------- Save bill -------------
-    const bill = await new BillComplete({
-      appointments: allAppointmentsForBill,
-      products,
-      totalAmount: grandTotal,
-      status: "paid",
-      businessId: req.user.businessId,
-    }).save();
+ // Attach clientName to each product in the bill
+const productsWithClient = products.map((p) => ({
+  ...p,
+  clientName: allAppointmentsForBill[0]?.clientName || null, // ✅ add clientName
+}));
+
+// Save bill with modified products array
+const bill = await new BillComplete({
+  appointments: allAppointmentsForBill,
+  products: productsWithClient, // ✅ use updated array
+  totalAmount: grandTotal,
+  status: "paid",
+  businessId: req.user.businessId,
+}).save();
+
+
+
+
+ if (products.length > 0) {
+  const productSoldDocs = products.map((p) => ({
+    productId: p._id || p.productId || p.id,
+    businessId: req.user.businessId,
+    billId: bill._id,
+    clientId: allAppointmentsForBill[0]?.clientId || null, // pick first client if multiple
+    clientName: allAppointmentsForBill[0]?.clientName || null, // ✅ add clientName
+    name: p.name,
+    price: p.price,
+    quantity: p.quantity,
+    total: (p.price || 0) * (p.quantity || 0),
+    description: p.description || "",
+    staffId: req.user.id, // who marked checkout
+    paymentMethod: "manual", // or map from bill if you have one
+  }));
+
+  try {
+    await ProductSold.insertMany(productSoldDocs);
+    console.log(`Inserted ${productSoldDocs.length} products into ProductSold`);
+  } catch (err) {
+    console.error("Failed to insert ProductSold docs:", err);
+    // don't break the flow, just log
+  }
+}
+
 
     // ------------- Backfill billId on real appointments -------------
     const toBackfill = [...existingIds, ...newIds];
     if (toBackfill.length > 0) {
-      await Appointments.updateMany(
-        { _id: { $in: toBackfill } },
-        { $set: { billId: bill._id } }
-      );
+      await Appointments.updateMany({ _id: { $in: toBackfill } }, { $set: { billId: bill._id } });
     }
 
     // ------------- Create AppointmentHistory entries for completed appointments -------------
@@ -1589,9 +1657,9 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
           action: "completed",
           changes: {
             status: { old: old.status, new: "completed" },
-            billId: { old: old.billId || null, new: String(bill._id) }
+            billId: { old: old.billId || null, new: String(bill._id) },
           },
-          note: "Appointment marked as completed via bill"
+          note: "Appointment marked as completed via bill",
         });
       }
 
@@ -1604,9 +1672,9 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
           action: "completed",
           changes: {
             status: { old: null, new: "completed" },
-            billId: { old: null, new: String(bill._id) }
+            billId: { old: null, new: String(bill._id) },
           },
-          note: "New appointment created and marked as completed via bill"
+          note: "New appointment created and marked as completed via bill",
         });
       }
 
