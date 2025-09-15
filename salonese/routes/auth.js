@@ -44,6 +44,7 @@ router.post('/login', async (req, res) => {
         let user = await BusinessOwner.findOne({ email });
         let role = 'admin';
         let businessName = null;
+        let businessAddress = null;
 
         if (!user) {
             user = await Staff.findOne({ email });
@@ -52,9 +53,11 @@ router.post('/login', async (req, res) => {
 
                 const business = await BusinessOwner.findById(user.businessId);
                 businessName = business?.businessName || null;
+                businessAddress = business?.address || null;
             }
         } else {
             businessName = user.businessName || null;
+            businessAddress = user.address || null;
         }
 
         if (!user) {
@@ -81,6 +84,7 @@ router.post('/login', async (req, res) => {
 
         const { password: _, ...userData } = user.toObject();
         userData.businessName = businessName;
+        userData.businessAddress = businessAddress;
 
         res.json({ token, user: userData });
     } catch (error) {
@@ -88,8 +92,6 @@ router.post('/login', async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
-
-
 
 
 

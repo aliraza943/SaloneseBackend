@@ -78,10 +78,10 @@ const appointmentSchema = new mongoose.Schema({
     type: String,
     required: false
   },
-  totalTax: { 
-    type: Number, 
-    default: 0 
-  },
+totalTax: {    
+  type: Number,
+  default: 0 
+},
   totalBill: { 
     type: Number, 
     default: 0 

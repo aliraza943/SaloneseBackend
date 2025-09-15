@@ -21,25 +21,31 @@ const ClienteleMiddleware = async (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized! Token has been invalidated or is not recognized.' });
     }
 
-    // Allow only providers or users with "manage_clientele" permission
-    if (decoded.role !== 'provider' && !decoded.permissions.includes("manage_clientele")) {
+    // Allow providers, admins, or users with "manage_clientele" permission
+    if (decoded.role !== 'provider' && decoded.role !== 'admin' && !decoded.permissions?.includes("manage_clientele")) {
       return res.status(403).json({ message: "Access denied! You don't have permission to manage appointments." });
     }
 
-    // For frontdesk (or non-provider) users, default staffId to their own id
-    if (decoded.role !== 'provider') {
+    // Staff ID handling:
+    // - Admins: authorized but we DON'T default staffId to admin's id (admin should pass staffId when needed)
+    // - Non-provider (e.g., frontdesk) users: default staffId to their own id
+    // - Providers with manage_clientele: require staffId in body
+    if (decoded.role === 'admin') {
+      // Admins: do not override/auto-set req.body.staffId
+    } else if (decoded.role !== 'provider') {
       req.body.staffId = decoded.id;
-    } else if (decoded.permissions.includes("manage_clientele")) {
+    } else if (decoded.permissions?.includes("manage_clientele")) {
       // For providers with manage_clientele, require staffId in the request body.
       if (!req.body.staffId) {
         return res.status(400).json({ message: "Staff ID is required!" });
       }
     }
 
-    // If staffId is provided, validate the staff record and ensure it belongs to the same business.
+    console.log("Staff ID in request body:", req.body.staffId);
     if (req.body.staffId) {
       const staff = await Staff.findById(req.body.staffId);
       if (!staff) {
+        console.log("THIS TRIGGEERED");
         return res.status(404).json({ message: "Staff member not found!" });
       }
       if (staff.businessId.toString() !== decoded.businessId.toString()) {

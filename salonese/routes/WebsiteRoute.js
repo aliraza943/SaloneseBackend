@@ -414,47 +414,42 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
   const { selection, date } = req.body;
   console.log('Received data:', { siteUrl, selection, date });
 
-  if (!date) {
-    return res.status(400).json({ success: false, message: 'Date is required' });
-  }
+  if (!date) return res.status(400).json({ success: false, message: 'Date is required' });
 
   try {
-    // 1) fetch website → businessId
     const website = await Website.findOne({ url: siteUrl });
     if (!website) return res.status(404).json({ success: false, message: 'Website not found' });
     const businessId = website.businessId;
 
-    // 2) preload service durations
-    const allServiceIds = Object.keys(selection);
-    const serviceDocs = await Service.find({ _id: { $in: allServiceIds } });
-    const durations = serviceDocs.reduce((acc, s) => { acc[s._id] = s.duration; return acc; }, {});
+    // normalize service ids
+    const allServiceIds = Object.keys(selection).map(String);
 
-    // 3) define time window
+    // preload service durations with string keys
+    const serviceDocs = await Service.find({ _id: { $in: allServiceIds } }).lean();
+    const durations = serviceDocs.reduce((acc, s) => { acc[String(s._id)] = s.duration || 0; return acc; }, {});
+
+    // time window
     const startDate = dayjs(date);
     const endDate = startDate.add(3, 'month');
 
-    // 4) fetch business (lean => plain object)
-    // fetch schedule (or whole doc if you prefer)
+    // fetch business schedule/exception dates safely
     const business = await Business.findOne({ businessId }, { schedule: 1, exceptionDates: 1, _id: 0 }).lean();
-
-    // --- IMPORTANT: extract the array properly ---
-    // handle both possible shapes:
-    //  - business.schedule.exceptionDates
-    //  - business.exceptionDates
     const exceptionDates = (business?.schedule?.exceptionDates) || (business?.exceptionDates) || [];
     console.log('Exception Dates:', JSON.stringify(exceptionDates, null, 2));
-    // ------------------------------------------------
 
-    // 5) fetch existing appointments in the window (upfront)
+    // fetch existing appointments inside window (upfront) and build staff -> appts map
     const existing = await Appointment.find({
       businessId,
       start: { $gte: startDate.toDate(), $lte: endDate.toDate() }
     }).lean();
 
-    // build map: staffId (string) -> [appointments]
     const staffApptsMap = {};
     for (const a of existing) {
-      const staffKey = (a.staffId || a.providerId || a.provider || a.providerId)?.toString?.() || null;
+      const staffKey = (
+        a.staffId?.toString?.() ||
+        a.providerId?.toString?.() ||
+        a.provider?.toString?.()
+      ) || null;
       if (!staffKey) continue;
       staffApptsMap[staffKey] = staffApptsMap[staffKey] || [];
       staffApptsMap[staffKey].push(a);
@@ -465,16 +460,17 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
 
     const rawSlotsByDay = {};
 
-    // 6) build raw slots & embedded appointments (day-by-day)
     for (let d = startDate; d.isBefore(endDate); d = d.add(1, 'day')) {
       const day = d.format('YYYY-MM-DD');
       const weekday = d.format('dddd');
 
-      const specific = Object.values(selection).filter(v => v !== 'max_availability');
+      // pick staffList (string ids in specific)
+      const specific = Object.values(selection).filter(v => v !== 'max_availability').map(String);
       const staffList = specific.length
         ? await Staff.find({ _id: { $in: specific }, businessId, role: 'provider' }).lean()
         : await Staff.find({ businessId, role: 'provider', services: { $all: allServiceIds } }).lean();
 
+      // collect & merge working-hour ranges
       let ranges = [];
       staffList.forEach(p => {
         (p.workingHours?.[weekday] || []).forEach(r => {
@@ -497,7 +493,7 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
         }
       }
 
-      const totalDur = allServiceIds.reduce((sum, id) => sum + (durations[id] || 0), 0);
+      const totalDur = allServiceIds.reduce((sum, id) => sum + (durations[String(id)] || 0), 0);
       const slots = [];
 
       for (const block of merged) {
@@ -509,14 +505,38 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
           let apptCursor = slotStart;
           const appointments = [];
 
-          for (const serviceId of allServiceIds) {
+          for (const serviceIdRaw of allServiceIds) {
+            const serviceId = String(serviceIdRaw);
             const dur = durations[serviceId] || 0;
             const segStart = apptCursor;
             const segEnd = apptCursor.add(dur, 'minute');
 
             let staffId = null;
             const sel = selection[serviceId];
-            if (sel !== 'max_availability') staffId = sel;
+
+            if (sel && sel !== 'max_availability') {
+              staffId = String(sel);
+            } else {
+              // pick any provider whose working hours cover this segment AND who has no conflicting existing appt
+              const candidate = staffList.find(p => {
+                // cover check
+                const covers = (p.workingHours?.[weekday] || []).some(rng => {
+                  const [ss, ee] = rng.split(' - ');
+                  const ws = dayjs(`${day} ${ss}`, 'YYYY-MM-DD hh:mm A');
+                  const we = dayjs(`${day} ${ee}`, 'YYYY-MM-DD hh:mm A');
+                  return !segStart.isBefore(ws) && !segEnd.isAfter(we);
+                });
+                if (!covers) return false;
+
+                // conflict check vs existing appts for this provider
+                const key = p._id?.toString?.() || String(p._id);
+                const apptsForP = staffApptsMap[key] || [];
+                const conflict = apptsForP.some(a => overlaps(segStart.toISOString(), segEnd.toISOString(), a.start, a.end));
+                return !conflict;
+              });
+
+              staffId = candidate ? String(candidate._id) : null;
+            }
 
             appointments.push({
               serviceId,
@@ -540,7 +560,7 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
         }
       }
 
-      // Apply exception date rules: note exceptionDates is an ARRAY now
+      // Apply exception date rules
       const exception = exceptionDates.find(e => dayjs(e.date).format('YYYY-MM-DD') === day);
 
       let finalSlots = [];
@@ -563,18 +583,19 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
         finalSlots = slots;
       }
 
-      // Filter out per-staff conflicts (same logic as before)
+      // Filter out per-staff conflicts: slots where every embedded segment can be assigned to a non-conflicting provider
       const availableAfterStaffChecks = finalSlots.filter(slot => {
         for (const seg of slot.appointments) {
           const segStart = seg.start;
           const segEnd = seg.end;
 
           if (seg.staffId) {
-            const key = seg.staffId.toString ? seg.staffId.toString() : String(seg.staffId);
+            const key = String(seg.staffId);
             const apptsForStaff = staffApptsMap[key] || [];
             const conflicting = apptsForStaff.some(a => overlaps(segStart, segEnd, a.start, a.end));
             if (conflicting) return false;
           } else {
+            // we must find some provider in staffList who covers & has no conflict (again)
             const candidate = staffList.find(p => {
               const covers = (p.workingHours?.[weekday] || []).some(rng => {
                 const [ss, ee] = rng.split(' - ');
@@ -584,7 +605,7 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
               });
               if (!covers) return false;
 
-              const key = p._id?.toString ? p._id.toString() : String(p._id);
+              const key = p._id?.toString?.() || String(p._id);
               const apptsForP = staffApptsMap[key] || [];
               const conflict = apptsForP.some(a => overlaps(segStart, segEnd, a.start, a.end));
               return !conflict;
@@ -599,7 +620,6 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
       rawSlotsByDay[day] = availableAfterStaffChecks;
     }
 
-    // 7) respond
     return res.json({
       success: true,
       businessId,
@@ -611,6 +631,8 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+
+
 
 
 
@@ -777,6 +799,7 @@ router.post('/get-availability/:siteUrl', async (req, res) => {
 router.post('/staffandDetails', async (req, res) => {
   try {
     const { appointments } = req.body;
+    console.log(req.body)
     if (!Array.isArray(appointments)) {
       return res.status(400).json({ success: false, message: 'appointments must be an array' });
     }
@@ -900,6 +923,42 @@ router.post('/auth/session', async (req, res) => {
   // Always respond once — after JWT verified
   res.status(200).json(responsePayload);
 });
+router.post('/get-professionals/:siteUrl', async (req, res) => {
+  const { siteUrl } = req.params;
+  const { bookingIds } = req.body;
+
+  try {
+    // 1. Find the website
+    const website = await Website.findOne({ url: siteUrl });
+
+    if (!website) {
+      return res.status(404).json({ success: false, message: 'Website not found' });
+    }
+
+    const businessId = website.businessId;
+
+    
+    const professionals = await Staff.find({
+      businessId,
+      role: 'provider',
+      services: { $in: bookingIds.map(id => new mongoose.Types.ObjectId(id)) }
+    }).select('-password -email -phone -role');
+    
+
+    return res.status(200).json({
+      success: true,
+      professionals,
+    });
+  } catch (error) {
+    console.error('Error fetching professionals:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch professionals',
+      error: error.message || error,
+    });
+  }
+});
+
 
 
 
