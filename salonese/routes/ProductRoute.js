@@ -57,18 +57,40 @@ router.post('/seed', async (req, res) => {
 // Create a product
 router.post('/', manageProductsMiddleware, async (req, res) => {
   try {
-    const { name, price, description, stock } = req.body;
+    const { name, price, description, batches } = req.body;
     const businessId = req.user.businessId;
+
+    console.log("📦 Incoming body:", req.body);
 
     if (!mongoose.Types.ObjectId.isValid(businessId)) {
       return res.status(400).json({ error: 'Invalid businessId' });
     }
 
-    // 1️⃣ Create the product
-    const product = new Product({ name, price, description, businessId, stock });
+    if (!batches || !Array.isArray(batches) || batches.length === 0) {
+      return res.status(400).json({ error: 'At least one batch is required' });
+    }
+
+    // Ensure numeric values
+    batches.forEach(b => {
+      b.quantity = Number(b.quantity);
+      b.costPrice = Number(b.costPrice);
+      if (isNaN(b.quantity) || isNaN(b.costPrice)) {
+        throw new Error("Batch quantity and costPrice must be numbers");
+      }
+    });
+
+    // 1️⃣ Create product with given batches
+    const product = new Product({
+      name,
+      price: Number(price),
+      description,
+      businessId,
+      batches
+    });
+
     await product.save();
 
-    // 2️⃣ Create a history entry
+    // 2️⃣ Create history entry
     const historyEntry = {
       productId: product._id,
       changedBy: req.user.id,
@@ -79,7 +101,8 @@ router.post('/', manageProductsMiddleware, async (req, res) => {
         name: { old: null, new: name },
         price: { old: null, new: price },
         description: { old: null, new: description },
-        stock: { old: null, new: stock }
+        stock: { old: null, new: product.stock },
+        batches: { old: null, new: batches }
       }
     };
 
@@ -89,6 +112,35 @@ router.post('/', manageProductsMiddleware, async (req, res) => {
   } catch (error) {
     console.error("🔥 Error in POST / ->", error);
     res.status(400).json({ error: error.message });
+  }
+});
+// Add stock batch
+router.post("/:id/batches", manageProductsMiddleware, async (req, res) => {
+  try {
+    const { quantity, costPrice } = req.body;
+    const productId = req.params.id;
+
+    if (!quantity || !costPrice) {
+      return res.status(400).json({ error: "Quantity and costPrice are required" });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    // Add new batch
+    product.batches.push({
+      quantity: Number(quantity),
+      costPrice: Number(costPrice)
+    });
+
+    await product.save();
+
+    res.status(200).json(product);
+  } catch (error) {
+    console.error("🔥 Error adding batch:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 

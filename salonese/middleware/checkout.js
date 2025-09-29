@@ -3,7 +3,7 @@ const Token = require("../models/Tokens"); // Adjust the path as needed
 
 const checkoutMiddleware = async (req, res, next) => {
   try {
-    console.log("WHAT")
+ 
     // Extract token from the Authorization header
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) {

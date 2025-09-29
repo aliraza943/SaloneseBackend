@@ -48,60 +48,10 @@ const http = require("http");
 const server = http.createServer(app);
 
 // ✅ Setup Socket.IO
-const { Server } = require("socket.io");
-const io = new Server(server, {
-  cors: {
-    origin: "*", // adjust in production
-    methods: ["GET", "POST"]
-  }
-});
-
-// ✅ Store user sockets
-const userSockets = new Map();
-
-// ✅ Socket.IO authentication
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error("No token provided"));
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = decoded.id;
-    next();
-  } catch (err) {
-    next(new Error("Invalid token"));
-  }
-});
-
-// ✅ Handle connections
-io.on("connection", (socket) => {
-  const userId = socket.userId;
-  console.log(`🔌 User connected: ${userId}`);
-  userSockets.set(userId, socket);
-
-  socket.on("disconnect", () => {
-    console.log(`❌ User disconnected: ${userId}`);
-    userSockets.delete(userId);
-  });
-});
-
-// ✅ Function to emit notification
-const sendNotificationToUser = (userId, notification) => {
-  const socket = userSockets.get(userId);
-  if (socket) {
-    socket.emit("notification", notification);
-    console.log(`📢 Sent notification to user ${userId}`);
-  } else {
-    console.log(`⚠️ User ${userId} not connected`);
-  }
-};
 
 // ✅ Export the notification function
 module.exports = {
-  app,
-  server,
-  io,
-  sendNotificationToUser
+  app
 };
 
 // ✅ Start the server

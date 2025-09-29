@@ -19,7 +19,7 @@ const Product = require("../models/ProductModal");
 const AppointmentHistory = require("../models/AppointmentsHistory");
 const StaffHistory = require("../models/StaffHistory");
 const ProductSold = require("../models/productsSold");
-
+const ArchivedStaff = require("../models/ArchiveStaff"); 
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -280,19 +280,22 @@ router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
     }
 
     // Check if the staff's businessId matches the requester's businessId
-    if (staff.businessId.toString() !== req.user.businessId.toString()) {
+    if (String(staff.businessId) !== String(req.user.businessId)) {
       return res.status(403).json({ message: "Unauthorized to delete this staff member." });
     }
 
-    // Additional check: if the staff being deleted is 'front desk', only an admin can delete them
-    if (staff.role === "front desk" && req.user.role !== "admin") {
+    // Additional check: if the staff being deleted is front desk, only an admin can delete them
+    // support both "front desk" and "frontdesk" variants to be safe
+    const isFrontDesk = (String(staff.role || "").toLowerCase() === "front desk")
+      || (String(staff.role || "").toLowerCase() === "frontdesk");
+    if (isFrontDesk && req.user.role !== "admin") {
       return res.status(403).json({ message: "Only admin can delete front desk staff." });
     }
 
     // --- 🔥 Log deletion in history BEFORE deleting ---
     await StaffHistory.create({
       staffId: staff._id,
-      changedBy: req.user.id,
+      changedBy: req.user.id || req.user._id,
       changedByModel: req.user.role === "admin" ? "BusinessOwner" : "Staff",
       changes: {
         deleted: {
@@ -311,16 +314,38 @@ router.delete("/:id", authMiddleware(["manage_staff"]), async (req, res) => {
       },
     });
 
-    // Delete the staff member
+    // --- Archive staff: create ArchivedStaff doc (no deletedBy / deleteReason) ---
+    const archiveObj = {
+      originalStaffId: staff._id,
+      name: staff.name,
+      email: staff.email,
+      phone: staff.phone,
+      role: staff.role,
+      workingHours: staff.workingHours || {},
+      permissions: staff.permissions || [],
+      businessId: staff.businessId,
+      password: staff.password, // hashed password preserved (optional)
+      image: staff.image || null,
+      services: staff.services || [],
+      deletedAt: new Date()
+    };
+
+    const archived = new ArchivedStaff(archiveObj);
+    await archived.save();
+
+    // --- Delete the staff member after successful archive ---
     await Staff.findByIdAndDelete(req.params.id);
 
     // Invalidate tokens for this user by marking them as not valid
     await Token.updateMany({ userId: req.params.id, valid: true }, { $set: { valid: false } });
 
-    res.json({ message: "Staff member deleted, history logged, and tokens invalidated successfully!" });
+    return res.json({
+      message: "Staff member archived, deleted, history logged, and tokens invalidated successfully!",
+      archivedId: archived._id
+    });
   } catch (error) {
     console.error("Delete Error:", error);
-    res.status(500).json({ message: "Server Error", error: error.message });
+    return res.status(500).json({ message: "Server Error", error: error.message });
   }
 });
 
@@ -1430,39 +1455,37 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
     }
 
     // ------------- Attempt to decrement stocks (conditional), track successful ones -------------
-    const decremented = []; // { productId, qty }
+// ------------- Attempt to decrement stocks (conditional), track successful ones -------------
+const decremented = []; // { productId, qty }
+try {
+  for (const [prodId, totalQty] of Object.entries(qtyByProductId)) {
     try {
-      for (const [prodId, totalQty] of Object.entries(qtyByProductId)) {
-        // attempt conditional decrement
-        const updated = await Product.findOneAndUpdate(
-          { _id: prodId, stock: { $gte: totalQty } },
-          { $inc: { stock: -totalQty } },
-          { new: true }
-        );
+      // Use FIFO batch decrement instead of a simple stock decrement
+   const consumed = await decrementBatches(prodId, totalQty);
+decremented.push({ productId: prodId, qty: totalQty, batches: consumed });
 
-        if (!updated) {
-          // failed to decrement (concurrent change likely). gather current stock and throw to rollback.
-          const prodDoc = await Product.findById(prodId).select("_id stock name").lean();
-          const available = prodDoc ? prodDoc.stock : 0;
-          throw new Error(
-            `Insufficient stock for product ${prodId} (available ${available}, requested ${totalQty})`
-          );
-        }
-
-        decremented.push({ productId: prodId, qty: totalQty });
-      }
-    } catch (decrErr) {
-      // Best-effort rollback for any decremented items
-      for (const u of decremented) {
-        try {
-          await Product.updateOne({ _id: u.productId }, { $inc: { stock: u.qty } });
-        } catch (rbErr) {
-          console.error("Rollback failed for product", u.productId, rbErr);
-        }
-      }
-      console.error("Failed to decrement all product stocks:", decrErr);
-      return res.status(400).json({ message: "Failed to update product stock", error: decrErr.message });
+    } catch (err) {
+      // rollback batches that were decremented earlier
+      // (you’d need to store original batch states for rollback if strict)
+      throw err;
     }
+  }
+} catch (decrErr) {
+  // Best-effort rollback for any decremented items
+  for (const u of decremented) {
+    try {
+      await Product.updateOne({ _id: u.productId }, { $inc: { stock: u.qty } });
+    } catch (rbErr) {
+      console.error("Rollback failed for product", u.productId, rbErr);
+    }
+  }
+  console.error("Failed to decrement all product stocks:", decrErr);
+  return res.status(400).json({
+    message: "Failed to update product stock",
+    error: decrErr.message,
+  });
+}
+
 
     // ------------- Create new appointments (no transaction) -------------
     const createdNew = await Promise.all(
@@ -1602,28 +1625,48 @@ const bill = await new BillComplete({
 
 
 
- if (products.length > 0) {
-  const productSoldDocs = products.map((p) => ({
-    productId: p._id || p.productId || p.id,
-    businessId: req.user.businessId,
-    billId: bill._id,
-    clientId: allAppointmentsForBill[0]?.clientId || null, // pick first client if multiple
-    clientName: allAppointmentsForBill[0]?.clientName || null, // ✅ add clientName
-    name: p.name,
-    price: p.price,
-    quantity: p.quantity,
-    total: (p.price || 0) * (p.quantity || 0),
-    description: p.description || "",
-    staffId: req.user.id, // who marked checkout
-    paymentMethod: "manual", // or map from bill if you have one
-  }));
+if (products.length > 0) {
+  const productSoldDocs = [];
+
+  for (const p of products) {
+    const prodId = p._id || p.productId || p.id;
+    const decr = decremented.find(d => String(d.productId) === String(prodId));
+
+    const batchesUsed = (decr?.batches || []).map(b => ({
+      batchId: b.batchId, // kept as-is from decrementBatches
+      qty: b.qty,
+    }));
+
+    const totalQty = batchesUsed.length > 0
+      ? batchesUsed.reduce((s, it) => s + (Number(it.qty) || 0), 0)
+      : Number(p.quantity || 0);
+
+    const price = Number(p.price || 0);
+    const total = price * totalQty;
+
+    productSoldDocs.push({
+      productId: prodId,                 // let mongoose cast
+      businessId: req.user.businessId,   // already an ObjectId from auth / req.user
+      billId: bill._id,
+      clientId: allAppointmentsForBill[0]?.clientId || null,
+      clientName: allAppointmentsForBill[0]?.clientName || null,
+      name: p.name || "",
+      price,
+      quantity: totalQty,
+      total,
+      description: p.description || "",
+      batchesUsed,                       // array of { batchId, qty }
+      soldAt: new Date(),
+      staffId: req.user.id,
+      paymentMethod: "manual",
+    });
+  }
 
   try {
     await ProductSold.insertMany(productSoldDocs);
     console.log(`Inserted ${productSoldDocs.length} products into ProductSold`);
   } catch (err) {
     console.error("Failed to insert ProductSold docs:", err);
-    // don't break the flow, just log
   }
 }
 
@@ -1760,6 +1803,53 @@ const bill = await new BillComplete({
   }
 });
 
+async function decrementBatches(productId, reqQty) {
+  const product = await Product.findById(productId).lean();
+  if (!product) throw new Error(`Product ${productId} not found`);
+
+  let remaining = Number(reqQty || 0);
+  const updatedBatches = [...(product.batches || [])].sort(
+    (a, b) => new Date(a.addedAt) - new Date(b.addedAt)
+  );
+
+  const consumed = []; // { batchId, qty }
+
+  for (const batch of updatedBatches) {
+    if (remaining <= 0) break;
+    const available = Number(batch.quantity || 0);
+    if (available <= 0) continue;
+
+    const take = Math.min(available, remaining);
+    remaining -= take;
+
+    // <-- DO NOT call mongoose.Types.ObjectId(...) here; just keep the existing id
+    consumed.push({
+      batchId: batch._id, // keep as-is (ObjectId or string)
+      qty: take,
+    });
+
+    // adjust the local copy so we can persist later
+    batch.quantity = available - take;
+  }
+
+  if (remaining > 0) {
+    throw new Error(`Insufficient stock for product ${productId}, missing ${remaining}`);
+  }
+
+  const newStock = updatedBatches.reduce((s, b) => s + (Number(b.quantity || 0)), 0);
+
+  await Product.updateOne(
+    { _id: productId },
+    {
+      $set: {
+        batches: updatedBatches,
+        stock: newStock,
+      },
+    }
+  );
+
+  return consumed; // array of { batchId, qty }
+}
 
 
 
