@@ -1,6 +1,7 @@
 const express = require('express');
 const Schedule = require('../models/WorkingHours');
-const authMiddleware = require('../middleware/authMiddleware'); // Using require to import the Schedule model
+const authMiddleware = require('../middleware/authMiddleware');
+const BusinessOwner=require('../models/BuisenessOwners') // Using require to import the Schedule model
 
 const router = express.Router();
 
@@ -135,6 +136,87 @@ router.delete("/exceptions/:id", authMiddleware(["manage_businessHours"]), async
     } catch (error) {
         console.error("Error deleting exception:", error);
         res.status(500).json({ error: "Error deleting exception" });
+    }
+});
+router.get("/notification-settings", authMiddleware([]), async (req, res) => {
+    try {
+        let owner = await BusinessOwner.findOne({ _id: req.user._id });
+
+        if (!owner) {
+            return res.status(404).json({ error: "Business owner not found" });
+        }
+
+        // If no notification settings → create default ones
+        if (!owner.notificationSettings || !owner.notificationSettings.type) {
+            owner.notificationSettings = {
+                type: "same-day",
+                minutesBefore: 30,
+                time: "18:00"
+            };
+            await owner.save();
+        }
+
+        res.status(200).json(owner.notificationSettings);
+    } catch (error) {
+        console.error("Error fetching notification settings:", error);
+        res.status(500).json({ error: "Error fetching notification settings" });
+    }
+});
+
+// Update notification settings
+router.put("/notification-settings", authMiddleware(["manage_clientele"]), async (req, res) => {
+    try {
+        const { type, minutesBefore, time } = req.body;
+
+        // Fetch owner by businessId
+        let owner = await BusinessOwner.findOne({ businessId: req.user.businessId });
+
+        if (!owner) {
+            return res.status(404).json({ error: "Business owner not found" });
+        }
+
+        // Update settings
+        owner.notificationSettings = {
+            type: type || "same-day",
+            minutesBefore: type === "same-day" ? minutesBefore ?? 30 : undefined,
+            time: type === "previous-day" ? time ?? "18:00" : undefined
+        };
+
+        await owner.save();
+
+        res.status(200).json({ message: "Notification settings updated successfully", notificationSettings: owner.notificationSettings });
+    } catch (error) {
+        console.error("Error updating notification settings:", error);
+        res.status(500).json({ error: "Error updating notification settings" });
+    }
+});
+
+router.get("/get-notification-settings", authMiddleware([]), async (req, res) => {
+    try {
+        // Fetch the business owner by businessId
+        let owner = await BusinessOwner.findOne({ businessId: req.user.businessId });
+
+        if (!owner) {
+            return res.status(404).json({ error: "Business owner not found" });
+        }
+
+        // If no notification settings exist, create defaults
+        if (!owner.notificationSettings || !owner.notificationSettings.type) {
+            owner.notificationSettings = {
+                type: "same-day",
+                minutesBefore: 30,
+                time: "18:00"
+            };
+            await owner.save();
+        }
+
+        res.status(200).json({
+            message: "Notification settings fetched successfully",
+            notificationSettings: owner.notificationSettings
+        });
+    } catch (error) {
+        console.error("Error fetching notification settings:", error);
+        res.status(500).json({ error: "Error fetching notification settings" });
     }
 });
 

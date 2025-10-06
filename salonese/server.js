@@ -4,7 +4,7 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const path = require("path");
 const connectDB = require("./config/db");
-
+require("./routes/cronjob"); // Import the cron job scheduler
 const staffRoutes = require("./routes/staffRoutes");
 const serviceRoutes = require("./routes/serviceRoutes");
 const workingHoursRoutes = require("./routes/workinghoursRoutes");
@@ -17,11 +17,13 @@ const PaymentRoute = require("./routes/paymentRoute");
 const reportAnalysis = require("./routes/reportAnalysis");
 const Notifications = require("./routes/notifications");
 const AiImage=require("./routes/AiImage")
+const MessageNotification=require("./routes/messageandEmailroute")
 
 const jwt = require("jsonwebtoken"); // ✅ JWT middleware
 
 dotenv.config();
 connectDB();
+
 
 const app = express();
 app.use(cors());
@@ -43,6 +45,7 @@ app.use("/api/payment", PaymentRoute);
 app.use("/api/report-analysis", reportAnalysis);
 app.use("/api/notifications", Notifications);
 app.use("/api/aiHairstyle", AiImage);
+app.use("/api/Message", MessageNotification);
 // ✅ Create HTTP server and wrap app
 const http = require("http");
 const server = http.createServer(app);

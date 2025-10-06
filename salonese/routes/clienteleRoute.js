@@ -382,7 +382,7 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
       console.log("Using top-level request body data");
     }
 
-    // Destructure incoming fields from the correct data source
+    // Destructure incoming fields from the correct data source (including notification toggles)
     const {
       username,
       phone,
@@ -399,6 +399,8 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
       hairColor,
       referredBy,
       additionalDetails,
+      emailNotification,
+      messageNotification,
     } = updateData;
 
     console.log("Extracted field values:", {
@@ -406,6 +408,8 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
       phone,
       address1,
       occupation,
+      emailNotification,
+      messageNotification,
       // ... log other important fields
     });
 
@@ -435,6 +439,9 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
         hairColor: "",
         referredBy: "",
         additionalDetails: "",
+        // default notifications (you recently added these fields)
+        emailNotification: false,
+        messageNotification: false,
       };
       client.data.push(dataEntry);
       dataEntry = client.data[client.data.length - 1];
@@ -448,7 +455,16 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
       if (val instanceof Date) return val.getTime();
       if (typeof val === "string") return val.trim();
       if (val === null || val === undefined) return "";
+      if (typeof val === "boolean") return val ? "true" : "false";
       return String(val);
+    };
+
+    // Parse boolean-like values robustly
+    const parseBool = (v) => {
+      if (v === true || v === "true" || v === 1 || v === "1") return true;
+      if (v === false || v === "false" || v === 0 || v === "0") return false;
+      // fallback: coerce truthy/falsy
+      return Boolean(v);
     };
 
     // Update helper with detailed logging
@@ -498,6 +514,19 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
     updateField("referredBy", referredBy);
     updateField("additionalDetails", additionalDetails);
 
+    // Notifications: coerce incoming values to boolean before updating
+    if (Object.prototype.hasOwnProperty.call(updateData, "emailNotification")) {
+      updateField("emailNotification", parseBool(emailNotification));
+    } else {
+      console.log("🔍 Field 'emailNotification' not provided in update payload");
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updateData, "messageNotification")) {
+      updateField("messageNotification", parseBool(messageNotification));
+    } else {
+      console.log("🔍 Field 'messageNotification' not provided in update payload");
+    }
+
     // Ensure top-level businessId array is updated
     if (!client.businessId.includes(businessId)) {
       console.log("Adding businessId to client record:", businessId);
@@ -542,6 +571,7 @@ router.put("/:id", ClienteleMiddleware, async (req, res) => {
   }
 });
 
+
 router.get("/getImages/:clientId", ClienteleMiddleware, async (req, res) => {
   try {
     const client = await Clientelle.findById(req.params.clientId);
@@ -577,6 +607,27 @@ router.get("/getImages/:clientId", ClienteleMiddleware, async (req, res) => {
 //   }
 // });
 // Add a note to a client
+router.put("/notifications/enable", async (req, res) => {
+  try {
+    const result = await Clientelle.updateMany(
+      {},
+      {
+        $set: {
+          "data.$[].emailNotification": true,
+          "data.$[].messageNotification": true
+        }
+      }
+    );
+
+    res.json({
+      message: "Notifications enabled for all clients across all businesses",
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error("Error enabling notifications:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 router.post("/addNote/:clientId", ClienteleMiddleware, async (req, res) => {
   console.log("---- Adding Note to Client ----");

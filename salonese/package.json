@@ -12,6 +12,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@sendgrid/client": "^8.1.6",
+    "@sendgrid/mail": "^8.1.6",
     "@supabase/supabase-js": "^2.49.7",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.0",
@@ -21,13 +23,17 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
+    "moment": "^2.30.1",
     "mongoose": "^8.9.5",
     "multer": "^1.4.5-lts.2",
+    "node-cron": "^4.2.1",
     "node-fetch": "^3.3.2",
     "path": "^0.12.7",
+    "sendgrid": "^5.2.3",
     "socket.io": "^4.8.1",
     "square": "^39.1.0",
-    "squareup": "^1.0.0"
+    "squareup": "^1.0.0",
+    "twilio": "^5.10.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

@@ -9,6 +9,7 @@ const ProductsSold = require('../models/productsSold');
 const ArchiveStaff=require('../models/ArchiveStaff');
 const Staff=require('../models/Staff');
 const Service = require('../models/Service');
+const Clientelle = require('../models/Cleintele');
 router.get('/', authMiddleware, async (req, res) => {
   const { startDate, endDate, staffId } = req.query;
   const businessId = req.user?.businessId;
@@ -307,6 +308,155 @@ router.post("/staff", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("❌ Error in /staff route:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post('/clientele', authMiddleware, async (req, res) => {
+  try {
+    const { clientIds = [], fromDate, toDate } = req.body;
+    const businessId = req.user?.businessId;
+
+    console.log('--- Incoming POST /api/report-analysis/clientele ---');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('businessId from token:', businessId);
+    console.log('timestamp:', new Date().toISOString());
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({ error: 'fromDate and toDate are required' });
+    }
+    if (!businessId) {
+      return res.status(401).json({ error: 'Unauthorized: Missing businessId' });
+    }
+
+    // Normalize dates
+    let start = new Date(fromDate);
+    let end = new Date(toDate);
+    if (isNaN(start) || isNaN(end)) {
+      return res.status(400).json({ error: 'Invalid fromDate or toDate format' });
+    }
+    if (start > end) [start, end] = [end, start];
+
+    start = new Date(start.setHours(0, 0, 0, 0));
+    end = new Date(end.setHours(23, 59, 59, 999));
+
+    const query = {
+      businessId,
+      'appointments.start': { $gte: start, $lte: end },
+    };
+
+    if (Array.isArray(clientIds) && clientIds.length > 0) {
+      const invalid = clientIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+      if (invalid.length > 0) {
+        return res.status(400).json({ error: 'Invalid clientIds', invalid });
+      }
+      query.clientId = { $in: clientIds.map(id => new mongoose.Types.ObjectId(id)) };
+    }
+
+    console.log('MongoDB query:', JSON.stringify(query, null, 2));
+    const bills = await Bill.find(query).lean();
+    console.log(`Found ${bills.length} bills matching filter.`);
+
+    // Collect candidate client IDs from bills (appointments + bill.clientId)
+    const clientSet = new Set();
+    bills.forEach(bill => {
+      if (bill.clientId) clientSet.add(String(bill.clientId));
+      (bill.appointments || []).forEach(app => {
+        if (app.clientId) clientSet.add(String(app.clientId));
+      });
+    });
+    const clientIdsToProcess = Array.isArray(clientIds) && clientIds.length > 0 ? clientIds : Array.from(clientSet);
+
+    console.log('Client IDs to process:', clientIdsToProcess);
+
+    const clientsDetailed = [];
+
+    // helper to coerce boolean-like values
+    const parseBool = (v) => {
+      if (v === true || v === 'true' || v === 1 || v === '1') return true;
+      if (v === false || v === 'false' || v === 0 || v === '0') return false;
+      return Boolean(v);
+    };
+
+    for (const cid of clientIdsToProcess) {
+      if (!mongoose.Types.ObjectId.isValid(cid)) continue;
+
+      const clientDoc = await Clientelle.findById(cid).lean();
+      if (!clientDoc) continue;
+
+      const dataForBusiness = (clientDoc.data || []).find(d => String(d.businessId) === String(businessId));
+      if (!dataForBusiness) continue;
+
+      // find most recent appointment in bills (date range only)
+      let mostRecentAppt = null;
+      for (const b of bills) {
+        (b.appointments || []).forEach(app => {
+          if (String(app.clientId) === String(cid)) {
+            const startDate = app.start ? new Date(app.start) : null;
+            if (startDate && (!mostRecentAppt || startDate > new Date(mostRecentAppt.start))) {
+              mostRecentAppt = { ...app };
+            }
+          }
+        });
+      }
+
+      if (!mostRecentAppt) {
+        // client has no appt in date range → skip this client
+        continue;
+      }
+
+      // provider info
+      let providerName = null;
+      if (mostRecentAppt.staffId) {
+        try {
+          const staffDoc = await Staff.findById(mostRecentAppt.staffId).select('name').lean();
+          providerName = staffDoc ? staffDoc.name : null;
+        } catch (e) {
+          providerName = null;
+        }
+      }
+
+      const enriched = {
+        clientId: String(cid),
+        email: clientDoc.email || undefined,
+        username: dataForBusiness.username || undefined,
+        phone: dataForBusiness.phone || undefined,
+        // include address if available
+        ...(dataForBusiness.address1 ||
+        dataForBusiness.address2 ||
+        dataForBusiness.city ||
+        dataForBusiness.province ||
+        dataForBusiness.postalCode
+          ? {
+              address: {
+                ...(dataForBusiness.address1 ? { address1: dataForBusiness.address1 } : {}),
+                ...(dataForBusiness.address2 ? { address2: dataForBusiness.address2 } : {}),
+                ...(dataForBusiness.city ? { city: dataForBusiness.city } : {}),
+                ...(dataForBusiness.province ? { province: dataForBusiness.province } : {}),
+                ...(dataForBusiness.postalCode ? { postalCode: dataForBusiness.postalCode } : {}),
+              },
+            }
+          : {}),
+        // normalized most recent appointment date as ISO
+        ...(mostRecentAppt.start ? { mostRecentAppointment: { date: new Date(mostRecentAppt.start).toISOString() } } : {}),
+        ...(providerName ? { mostRecentProvider: { name: providerName } } : {}),
+
+        // --- Notification flags (coerced to booleans) ---
+        emailNotification: parseBool(dataForBusiness.emailNotification),
+        messageNotification: parseBool(dataForBusiness.messageNotification),
+      };
+
+      clientsDetailed.push(enriched);
+    }
+
+    // Return ONLY the clientsDetailed section
+    console.log('================= RESPONSE (clientsDetailed) =================');
+    console.log(JSON.stringify({ clientsDetailed }, null, 2));
+    console.log('================= RESPONSE END ===================');
+
+    return res.json({ clientsDetailed });
+  } catch (err) {
+    console.error('❌ Error in /clientele route:', err);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

@@ -12,6 +12,10 @@ const Token = require("../models/Tokens")
 const taxData = require("../models/taxData"); 
 const BusinessOwner= require("../models/BuisenessOwners")// Import tax data
 const multer = require("multer");
+const dotenv = require("dotenv");
+dotenv.config(); // load .env explicitly
+const sgClient = require("@sendgrid/client");
+
 const BillComplete = require("../models/BillComplete");
 const authenticateToken = require('../middleware/markAsCompleteMiddleware');
 const Notification = require("../models/notifications"); // Import Notification model
@@ -19,7 +23,22 @@ const Product = require("../models/ProductModal");
 const AppointmentHistory = require("../models/AppointmentsHistory");
 const StaffHistory = require("../models/StaffHistory");
 const ProductSold = require("../models/productsSold");
-const ArchivedStaff = require("../models/ArchiveStaff"); 
+const ArchivedStaff = require("../models/ArchiveStaff");
+const Business = require("../models/BuisenessOwners");
+const twilio = require("twilio");
+const Clientelle= require("../models/Cleintele")
+const ScheduledNotification = require("../models/ScheduleNotificationSchema");
+const authToken  = process.env.AUTH_TOKEN;
+const accountSid = process.env.TWILIO_SID;
+const client     = twilio(accountSid, authToken);
+const FROM_NUMBER = process.env.TWILIO_PHONE_NUMBER
+sgClient.setApiKey(process.env.SendGrid_KEY);
+const MessagingSidTwillo=process.env.Messaging_twillo_SID // Default fallback number
+console.log("SID:", MessagingSidTwillo);
+console.log("TOKEN exists?", !!process.env.AUTH_TOKEN);
+console.log("FROM:", process.env.TWILIO_PHONE_NUMBER);
+
+
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -746,6 +765,30 @@ if (req.user.role === "admin") {
     console.log(`Admin → Notifications sent to provider, ${frontdesks.length} frontdesks, and the admin.`);
 }
 
+// After saving appointment and sending staff notifications
+// Fetch business info
+const business = await Business.findById(req.user.businessId); 
+const businessName = business?.businessName || "Salonese";
+const businessNotificationSettings = business?.notificationSettings || {};
+
+// Prepare the appointment info to send
+const appointmentInfo = { 
+  _id: newAppointment._id, 
+  businessId: req.user.businessId,
+  clientName: clientName, // fallback name
+  businessNotificationSettings // include settings here
+};
+
+try {
+  await sendClientNotification(
+    clientId,
+    start,
+    appointmentInfo,
+    businessName
+  );
+} catch (notifyErr) {
+  console.error("Failed to send client notification:", notifyErr.message);
+}
 
 
         res.status(201).json({ 
@@ -757,9 +800,120 @@ if (req.user.role === "admin") {
         console.error(error);
         res.status(500).json({ message: "Server Error", error });
     }
-});
 
+  });
 
+async function sendClientNotification(clientId, start, appointment, businessName) {
+  console.log("🔔 [sendClientNotification] START");
+  console.log("➡️ Inputs:", { clientId, start, appointment, businessName });
+
+  try {
+    const clientDoc = await Clientelle.findById(clientId);
+    if (!clientDoc) return console.error("❌ Client not found:", clientId);
+
+    const clientData = clientDoc.data.find(
+      (d) => d.businessId.toString() === appointment.businessId.toString()
+    );
+    if (!clientData) return console.error("❌ No client data found for this business:", appointment.businessId);
+
+    // Prepare phone/email
+    let toNumber = null;
+    if (clientData.messageNotification && clientData.phone?.trim()) {
+      const formatted = clientData.phone.trim();
+      if (formatted.startsWith("+")) toNumber = formatted;
+      else console.error("❌ Invalid phone format:", formatted);
+    }
+
+    const toEmail = clientData.emailNotification ? clientDoc.email : null;
+
+    // Determine sendTime
+    let sendTime = new Date(start);
+    if (appointment.businessNotificationSettings) {
+      const { type, minutesBefore, time } = appointment.businessNotificationSettings;
+      if (type === "same-day" && minutesBefore) {
+        sendTime = new Date(new Date(start).getTime() - minutesBefore * 60 * 1000);
+      } else if (type === "previous-day" && time) {
+        const [hours, minutes] = time.split(":").map(Number);
+        sendTime = new Date(new Date(start).getTime() - 24 * 60 * 60 * 1000);
+        sendTime.setHours(hours, minutes, 0, 0);
+      }
+    }
+
+    const now = new Date();
+    const messageBody = `📅 Hi ${clientData.username}, this is a reminder of your appointment on ${new Date(start).toLocaleString()} at ${businessName}.`;
+
+    if (sendTime < now) sendTime = now;
+
+    const diffHours = (sendTime - now) / (1000 * 60 * 60);
+
+    // === If within Twilio/SendGrid limits ===
+    if (diffHours <= 72) {
+      if (toNumber) {
+        if (diffHours <= 168) {
+          await client.messages.create({
+            body: messageBody,
+            messagingServiceSid: MessagingSidTwillo,
+            to: toNumber,
+            sendAt: sendTime,
+            scheduleType: "fixed",
+          });
+          console.log("✅ SMS scheduled via Twilio");
+        } else {
+          console.log("⚠️ SMS beyond 7 days — will use cron fallback");
+        }
+      }
+
+      if (toEmail) {
+        const request = {
+          method: "POST",
+          url: "/v3/mail/send",
+          body: {
+            personalizations: [
+              {
+                to: [{ email: toEmail }],
+                subject: `Appointment Reminder at ${businessName}`,
+                ...(sendTime > now
+                  ? { send_at: Math.floor(sendTime.getTime() / 1000) }
+                  : {}),
+              },
+            ],
+            from: { email: process.env.SENDGRID_FROM_EMAIL, name: "Salonese" },
+            content: [{ type: "text/plain", value: messageBody }],
+          },
+        };
+        await sgClient.request(request);
+        console.log("✅ Email sent/scheduled via SendGrid");
+      }
+    }
+
+    // === If beyond 72 hours (email) or 7 days (SMS) ===
+    if (diffHours > 72 || diffHours > 168) {
+      await ScheduledNotification.create({
+        clientId,
+        toNumber,
+        toEmail,
+        messageBody,
+        businessName,
+        sendTime,
+        type:
+          toNumber && toEmail
+            ? "both"
+            : toNumber
+            ? "sms"
+            : toEmail
+            ? "email"
+            : "none",
+      });
+      console.log("📅 Notification stored for cron-based delivery at", sendTime);
+    }
+
+  } catch (err) {
+    console.error("❌ Failed to send notification:", err.message);
+    console.error("❌ Full Error:", err.response?.body || err);
+  }
+
+  console.log("🔔 [sendClientNotification] END");
+}
 // ✅ Get All Appointments
 router.get("/appointments", async (req, res) => {
     try {
@@ -1321,8 +1475,9 @@ router.post("/appointments/markAsComplete", authenticateToken, async (req, res) 
   console.log("Marking Receipt as Complete (non-transactional)");
 
   try {
-    const { appointments = [], products = [] } = req.body;
-
+    const { appointments = [], products = [] ,statusOnly} = req.body;
+    console.log(`Received ${appointments.length} appointments and ${products.length} products and status  ${statusOnly}`);
+console.log(appointments)
     if (!Array.isArray(appointments) || appointments.length === 0) {
       return res.status(400).json({ message: "No appointments provided" });
     }

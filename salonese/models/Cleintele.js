@@ -70,6 +70,15 @@ const ClientelleSchema = new mongoose.Schema(
             description: { type: String, required: true, trim: true },
           },
         ],
+                emailNotification: {
+          type: Boolean,
+          default: false,
+        },
+        messageNotification: {
+          type: Boolean,
+          default: false,
+        },
+
         createdAt: {
           type: Date,
           default: Date.now,

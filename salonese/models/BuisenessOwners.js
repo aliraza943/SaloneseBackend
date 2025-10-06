@@ -42,8 +42,26 @@ const BusinessOwnerSchema = new mongoose.Schema({
     address:{
         type: String,
         trim: true
+
+    },
+        notificationSettings: {
+        type: {
+            type: String,
+            enum: ["same-day", "previous-day"],
+            default: "same-day"
+        },
+        minutesBefore: {
+            type: Number, // only applies if type = same-day
+            default: 30
+        },
+        time: {
+            type: String, // only applies if type = previous-day (HH:mm format)
+            default: "18:00"
+        }
     }
 }, { timestamps: true });
+
+
 
 // Set businessId before saving the document
 BusinessOwnerSchema.pre('save', function (next) {
