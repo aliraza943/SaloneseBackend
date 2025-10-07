@@ -18,6 +18,8 @@ const squareClient = new Client({
 });
 const paymentsApi = squareClient.paymentsApi;
 const AppointmentHistory = require('../models/AppointmentsHistory');
+const { sendClientNotification } = require("../routes/messageandEmailroute");
+const Business = require('../models/BuisenessOwners');
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -249,6 +251,28 @@ if (appointmentsToInsert.length) {
 
   await Notification.insertMany(notifications);
 }
+  try {
+    const business = await Business.findById(bill.businessId);
+    const businessName = business?.businessName || "Salonese";
+    const businessNotificationSettings = business?.notificationSettings || {};
+
+    const baseAppointmentInfo = { businessNotificationSettings };
+
+    insertedAppointments.forEach((appt) => {
+      const appointmentInfo = {
+        ...baseAppointmentInfo,
+        _id: appt._id,
+        businessId: appt.businessId,
+      };
+
+      sendClientNotification(appt.clientId, appt.start, appointmentInfo, businessName)
+        .catch((notifyErr) => {
+          console.error(`Failed to send client notification for appointment ${appt._id}:`, notifyErr);
+        });
+    });
+  } catch (notifyErr) {
+    console.error("Failed to prepare/send client notifications:", notifyErr);
+  }
 
       // 7) Send response
       return res.status(200).json({

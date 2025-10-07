@@ -17,7 +17,7 @@ const PaymentRoute = require("./routes/paymentRoute");
 const reportAnalysis = require("./routes/reportAnalysis");
 const Notifications = require("./routes/notifications");
 const AiImage=require("./routes/AiImage")
-const MessageNotification=require("./routes/messageandEmailroute")
+
 
 const jwt = require("jsonwebtoken"); // ✅ JWT middleware
 
@@ -45,7 +45,7 @@ app.use("/api/payment", PaymentRoute);
 app.use("/api/report-analysis", reportAnalysis);
 app.use("/api/notifications", Notifications);
 app.use("/api/aiHairstyle", AiImage);
-app.use("/api/Message", MessageNotification);
+
 // ✅ Create HTTP server and wrap app
 const http = require("http");
 const server = http.createServer(app);
