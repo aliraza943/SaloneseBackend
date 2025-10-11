@@ -313,13 +313,8 @@ router.post("/staff", authMiddleware, async (req, res) => {
 
 router.post('/clientele', authMiddleware, async (req, res) => {
   try {
-    const { clientIds = [], fromDate, toDate } = req.body;
+    const { clientIds = [], fromDate, toDate, staffIds = [] } = req.body;
     const businessId = req.user?.businessId;
-
-    console.log('--- Incoming POST /api/report-analysis/clientele ---');
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    console.log('businessId from token:', businessId);
-    console.log('timestamp:', new Date().toISOString());
 
     if (!fromDate || !toDate) {
       return res.status(400).json({ error: 'fromDate and toDate are required' });
@@ -352,11 +347,11 @@ router.post('/clientele', authMiddleware, async (req, res) => {
       query.clientId = { $in: clientIds.map(id => new mongoose.Types.ObjectId(id)) };
     }
 
-    console.log('MongoDB query:', JSON.stringify(query, null, 2));
+    console.log('MongoDB query:', query);
+
     const bills = await Bill.find(query).lean();
     console.log(`Found ${bills.length} bills matching filter.`);
 
-    // Collect candidate client IDs from bills (appointments + bill.clientId)
     const clientSet = new Set();
     bills.forEach(bill => {
       if (bill.clientId) clientSet.add(String(bill.clientId));
@@ -364,13 +359,15 @@ router.post('/clientele', authMiddleware, async (req, res) => {
         if (app.clientId) clientSet.add(String(app.clientId));
       });
     });
-    const clientIdsToProcess = Array.isArray(clientIds) && clientIds.length > 0 ? clientIds : Array.from(clientSet);
+    const clientIdsToProcess =
+      Array.isArray(clientIds) && clientIds.length > 0 ? clientIds : Array.from(clientSet);
 
-    console.log('Client IDs to process:', clientIdsToProcess);
+    const validStaffIds = staffIds
+      .filter(id => mongoose.Types.ObjectId.isValid(id))
+      .map(id => String(id));
 
     const clientsDetailed = [];
 
-    // helper to coerce boolean-like values
     const parseBool = (v) => {
       if (v === true || v === 'true' || v === 1 || v === '1') return true;
       if (v === false || v === 'false' || v === 0 || v === '0') return false;
@@ -383,10 +380,12 @@ router.post('/clientele', authMiddleware, async (req, res) => {
       const clientDoc = await Clientelle.findById(cid).lean();
       if (!clientDoc) continue;
 
-      const dataForBusiness = (clientDoc.data || []).find(d => String(d.businessId) === String(businessId));
+      const dataForBusiness = (clientDoc.data || []).find(
+        d => String(d.businessId) === String(businessId)
+      );
       if (!dataForBusiness) continue;
 
-      // find most recent appointment in bills (date range only)
+      // --- find most recent appointment in bills (within date range) ---
       let mostRecentAppt = null;
       for (const b of bills) {
         (b.appointments || []).forEach(app => {
@@ -399,16 +398,21 @@ router.post('/clientele', authMiddleware, async (req, res) => {
         });
       }
 
-      if (!mostRecentAppt) {
-        // client has no appt in date range → skip this client
-        continue;
+      if (!mostRecentAppt) continue;
+
+      // --- 🔥 Only include clients whose most recent provider matches selected staff ---
+      if (validStaffIds.length > 0) {
+        if (!validStaffIds.includes(String(mostRecentAppt.staffId))) {
+          continue; // skip this client
+        }
       }
 
-      // provider info
       let providerName = null;
       if (mostRecentAppt.staffId) {
         try {
-          const staffDoc = await Staff.findById(mostRecentAppt.staffId).select('name').lean();
+          const staffDoc = await Staff.findById(mostRecentAppt.staffId)
+            .select('name')
+            .lean();
           providerName = staffDoc ? staffDoc.name : null;
         } catch (e) {
           providerName = null;
@@ -420,7 +424,6 @@ router.post('/clientele', authMiddleware, async (req, res) => {
         email: clientDoc.email || undefined,
         username: dataForBusiness.username || undefined,
         phone: dataForBusiness.phone || undefined,
-        // include address if available
         ...(dataForBusiness.address1 ||
         dataForBusiness.address2 ||
         dataForBusiness.city ||
@@ -436,22 +439,16 @@ router.post('/clientele', authMiddleware, async (req, res) => {
               },
             }
           : {}),
-        // normalized most recent appointment date as ISO
-        ...(mostRecentAppt.start ? { mostRecentAppointment: { date: new Date(mostRecentAppt.start).toISOString() } } : {}),
+        ...(mostRecentAppt.start
+          ? { mostRecentAppointment: { date: new Date(mostRecentAppt.start).toISOString() } }
+          : {}),
         ...(providerName ? { mostRecentProvider: { name: providerName } } : {}),
-
-        // --- Notification flags (coerced to booleans) ---
         emailNotification: parseBool(dataForBusiness.emailNotification),
         messageNotification: parseBool(dataForBusiness.messageNotification),
       };
 
       clientsDetailed.push(enriched);
     }
-
-    // Return ONLY the clientsDetailed section
-    console.log('================= RESPONSE (clientsDetailed) =================');
-    console.log(JSON.stringify({ clientsDetailed }, null, 2));
-    console.log('================= RESPONSE END ===================');
 
     return res.json({ clientsDetailed });
   } catch (err) {

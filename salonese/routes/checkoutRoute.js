@@ -87,6 +87,54 @@ router.get("/client/:clientId/appointments", async (req, res) => {
 });
 
 
+// helper: decrementBatches (place this above router.post)
+async function decrementBatches(productId, reqQty) {
+  const product = await Product.findById(productId).lean();
+  if (!product) throw new Error(`Product ${productId} not found`);
+
+  let remaining = Number(reqQty || 0);
+  const updatedBatches = [...(product.batches || [])].sort(
+    (a, b) => new Date(a.addedAt) - new Date(b.addedAt)
+  );
+
+  const consumed = []; // { batchId, qty }
+
+  for (const batch of updatedBatches) {
+    if (remaining <= 0) break;
+    const available = Number(batch.quantity || 0);
+    if (available <= 0) continue;
+
+    const take = Math.min(available, remaining);
+    remaining -= take;
+
+    consumed.push({
+      batchId: batch._id, // keep existing id as-is
+      qty: take,
+    });
+
+    batch.quantity = available - take;
+  }
+
+  if (remaining > 0) {
+    throw new Error(`Insufficient stock for product ${productId}, missing ${remaining}`);
+  }
+
+  const newStock = updatedBatches.reduce((s, b) => s + (Number(b.quantity || 0)), 0);
+
+  await Product.updateOne(
+    { _id: productId },
+    {
+      $set: {
+        batches: updatedBatches,
+        stock: newStock,
+      },
+    }
+  );
+
+  return consumed; // array of { batchId, qty }
+}
+
+// ---------------------------------------------------------
 
 router.post("/createRecords", checkoutMiddleware, async (req, res) => {
   try {
@@ -94,11 +142,8 @@ router.post("/createRecords", checkoutMiddleware, async (req, res) => {
     if (!businessId) {
       return res.status(400).json({ message: "Business ID missing from token." });
     }
-    
 
     const { clientId, appointments = [], clientName, products = [], notes, paymentMethod } = req.body;
-    console.log("appointments", appointments);
-    console.log("products", products);
 
     if (!clientId) {
       return res.status(400).json({ message: "clientId is required in request body." });
@@ -107,118 +152,90 @@ router.post("/createRecords", checkoutMiddleware, async (req, res) => {
       return res.status(400).json({ message: "Invalid clientId format." });
     }
 
-    // must have at least appointments or products
-    if ((!Array.isArray(appointments) || appointments.length === 0) &&
-        (!Array.isArray(products) || products.length === 0)) {
+    if (
+      (!Array.isArray(appointments) || appointments.length === 0) &&
+      (!Array.isArray(products) || products.length === 0)
+    ) {
       return res.status(400).json({ message: "No appointments or products provided." });
     }
 
-    // --- Build Appointment docs if any ---
-   // --- Build Appointment docs if any ---
-let appointmentDocs = [];
-if (Array.isArray(appointments) && appointments.length > 0) {
-  appointmentDocs = appointments.map((a) => {
-    let staffIdVal = a.staffId;
-    let staffNameVal = "";  // ✅ capture staffName
-    if (staffIdVal && typeof staffIdVal === "object" && staffIdVal._id) {
-      staffNameVal = staffIdVal.name || ""; // ✅ take name if provided
-      staffIdVal = staffIdVal._id;          // ✅ replace with ObjectId
+    // --- build appointment docs ---
+    let appointmentDocs = [];
+    if (Array.isArray(appointments) && appointments.length > 0) {
+      appointmentDocs = appointments.map((a) => {
+        let staffIdVal = a.staffId;
+        let staffNameVal = "";
+        if (staffIdVal && typeof staffIdVal === "object" && staffIdVal._id) {
+          staffNameVal = staffIdVal.name || "";
+          staffIdVal = staffIdVal._id;
+        }
+
+        const taxesArr = Array.isArray(a.taxesApplied) ? a.taxesApplied : [];
+        const totalTax = taxesArr.reduce((sum, t) => {
+          const amt = t && typeof t.amount !== "undefined" ? Number(t.amount) : 0;
+          return sum + (isNaN(amt) ? 0 : amt);
+        }, 0);
+
+        const serviceCharges = Number(a.serviceCharges ?? a.totalBill ?? 0);
+        const totalBill =
+          typeof a.totalBill !== "undefined" && a.totalBill !== null
+            ? Number(a.totalBill)
+            : serviceCharges + totalTax;
+
+        return {
+          businessId,
+          clientId,
+          clientName: a.clientName || clientName || "Unknown Client",
+          staffId: staffIdVal || req.user._id,
+          staffName: staffNameVal || a.staffId.name || "",
+          serviceId: a.serviceId || undefined,
+          serviceName: a.serviceName || "Untitled Service",
+          serviceCharges,
+          serviceType: a.serviceType || a.serviceName || "general",
+          title: a.title || a.serviceName || "Untitled Appointment",
+          description: a.description || a.serviceName || "No description provided",
+          start: a.start ? new Date(a.start) : undefined,
+          end: a.end ? new Date(a.end) : undefined,
+          taxesApplied: taxesArr,
+          totalTax: Number(totalTax.toFixed(2)),
+          totalBill: Number(totalBill.toFixed(2)),
+          quantity: a.quantity || 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+      });
     }
 
-    const taxesArr = Array.isArray(a.taxesApplied) ? a.taxesApplied : [];
-    const totalTax = taxesArr.reduce((sum, t) => {
-      const amt = t && (typeof t.amount !== "undefined") ? Number(t.amount) : 0;
-      return sum + (isNaN(amt) ? 0 : amt);
-    }, 0);
-
-    const serviceCharges = Number(a.serviceCharges ?? a.totalBill ?? 0);
-    const totalBill = (typeof a.totalBill !== "undefined" && a.totalBill !== null)
-      ? Number(a.totalBill)
-      : serviceCharges + totalTax;
-
-    return {
-      businessId,
-      clientId,
-      clientName: a.clientName || clientName || "Unknown Client",
-
-      staffId: staffIdVal || req.user._id,
-      staffName: staffNameVal || a.staffId.name || "",   // ✅ store staffName
-      serviceId: a.serviceId || undefined,
-      serviceName: a.serviceName || "Untitled Service",
-
-      serviceCharges: serviceCharges,
-      serviceType: a.serviceType || a.serviceName || "general",
-
-      title: a.title || a.serviceName || "Untitled Appointment",
-      description: a.description || a.serviceName || "No description provided",
-
-      start: a.start ? new Date(a.start) : undefined,
-      end: a.end ? new Date(a.end) : undefined,
-
-      taxesApplied: taxesArr,
-      totalTax: Number(totalTax.toFixed(2)),
-      totalBill: Number(totalBill.toFixed(2)),
-
-      quantity: a.quantity || 1,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-  });
-}
-
-
-    // --- Insert appointments if any ---
+    // --- insert appointments ---
     let createdAppointments = [];
     if (appointmentDocs.length > 0) {
       createdAppointments = await Appointment.insertMany(appointmentDocs, { ordered: true });
     }
 
-    // Convert created appointment docs to plain objects for embedding into bill
-// Convert created appointment docs to plain objects for embedding into bill
-const embeddedAppointments = (createdAppointments || []).map((a, idx) => {
-  const plain = typeof a.toObject === "function" ? a.toObject() : a;
+    // --- embedded data for bill ---
+    const embeddedAppointments = (createdAppointments || []).map((a, idx) => {
+      const plain = typeof a.toObject === "function" ? a.toObject() : a;
+      const staffNameFromReq =
+        appointments[idx]?.staffId?.name || appointments[idx]?.staffName || "";
 
-  // pull staffName from the original request object at the same index
-  const staffNameFromReq =
-    appointments[idx]?.staffId?.name || appointments[idx]?.staffName || "";
+      return {
+        ...plain,
+        staffName: staffNameFromReq,
+        serviceCharges: Number(plain.serviceCharges || 0),
+        totalTax: Number(plain.totalTax || 0),
+        totalBill: Number(plain.totalBill || 0),
+        quantity: Number(plain.quantity || 1),
+      };
+    });
 
-  return {
-    _id: plain._id,
-    staffId: plain.staffId,
-    staffName: staffNameFromReq,   // ✅ inject only in bill
-    clientId: plain.clientId,
-    businessId: plain.businessId,
-    title: plain.title,
-    serviceType: plain.serviceType,
-    serviceId: plain.serviceId,
-    serviceName: plain.serviceName,
-    clientName: plain.clientName,
-    description: plain.description,
-    serviceCharges: Number(plain.serviceCharges || 0),
-    start: plain.start,
-    end: plain.end,
-    taxesApplied: Array.isArray(plain.taxesApplied) ? plain.taxesApplied : [],
-    totalTax: Number(plain.totalTax || 0),
-    totalBill: Number(plain.totalBill || 0),
-    note: plain.note || "",
-    quantity: Number(plain.quantity || 1),
-    autoGenerated: plain.autoGenerated || false,
-  };
-});
+    const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
+      name: p.name || p.title || "Product",
+      price: Number(p.price ?? p.unitPrice ?? 0),
+      quantity: Number(p.quantity ?? 1),
+      description: p.description || "",
+      clientName: clientName || embeddedAppointments[0]?.clientName || "Unknown Client",
+    }));
 
-
-    // --- Normalize products for bill embedding ---
-// --- Normalize products for bill embedding ---
-const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
-  name: p.name || p.title || "Product",
-  price: Number(p.price ?? p.unitPrice ?? 0),
-  quantity: Number(p.quantity ?? 1),
-  description: p.description || "",
-  clientName: clientName || embeddedAppointments[0]?.clientName || "Unknown Client", // ✅ add clientName
-}));
-
-
-    // --- Compute totals ---
     const appointmentTotal = embeddedAppointments.reduce(
       (acc, ap) => acc + (Number(ap.totalBill || 0) * Number(ap.quantity || 1)),
       0
@@ -229,11 +246,10 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
     );
     const totalAmount = Number((appointmentTotal + productsTotal).toFixed(2));
 
-    // --- Create bill payload ---
     const billPayload = {
       businessId,
       clientId,
-      clientName: clientName || embeddedAppointments[0]?.clientName || undefined,
+      clientName: clientName || embeddedAppointments[0]?.clientName,
       appointments: embeddedAppointments,
       products: embeddedProducts,
       totalAmount,
@@ -243,10 +259,8 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
       paymentMethod: paymentMethod || undefined,
     };
 
-    // --- Create Bill document ---
     const createdBill = await BillComplete.create(billPayload);
 
-    // --- Update appointments: set billId on appointment records ---
     const appointmentIds = createdAppointments.map((a) => a._id);
     if (appointmentIds.length > 0) {
       await Appointment.updateMany(
@@ -255,12 +269,12 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
       );
     }
 
-    // re-fetch updated appointments
-    const updatedAppointments = appointmentIds.length > 0
-      ? await Appointment.find({ _id: { $in: appointmentIds } })
-      : [];
+    const updatedAppointments =
+      appointmentIds.length > 0
+        ? await Appointment.find({ _id: { $in: appointmentIds } })
+        : [];
 
-    // --- PRODUCT VALIDATION & STOCK CHECK ---
+    // --- PRODUCT VALIDATION + decrement batches ---
     let createdProductsSold = [];
     if (Array.isArray(products) && products.length > 0) {
       const productRequests = products.map((p, idx) => ({
@@ -270,21 +284,25 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
         raw: p,
       }));
 
-      // Validate productId format
-      const invalidIdEntries = productRequests.filter(pr => !pr.productId || !mongoose.Types.ObjectId.isValid(pr.productId));
+      const invalidIdEntries = productRequests.filter(
+        (pr) => !pr.productId || !mongoose.Types.ObjectId.isValid(pr.productId)
+      );
       if (invalidIdEntries.length > 0) {
-        if (appointmentIds.length > 0) await Appointment.deleteMany({ _id: { $in: appointmentIds } }).catch(()=>{});
-        await BillComplete.findByIdAndDelete(createdBill._id).catch(()=>{});
+        await Appointment.deleteMany({ _id: { $in: appointmentIds } }).catch(() => {});
+        await BillComplete.findByIdAndDelete(createdBill._id).catch(() => {});
         return res.status(400).json({
           success: false,
           message: "One or more products are missing a valid productId.",
-          invalidProductIndexes: invalidIdEntries.map(e => e.idx),
+          invalidProductIndexes: invalidIdEntries.map((e) => e.idx),
         });
       }
 
       const productIds = productRequests.map((p) => p.productId);
       const foundProducts = await Product.find({ _id: { $in: productIds }, businessId }).lean();
-      const foundById = foundProducts.reduce((m, fp) => { m[fp._id.toString()] = fp; return m; }, {});
+      const foundById = foundProducts.reduce((m, fp) => {
+        m[fp._id.toString()] = fp;
+        return m;
+      }, {});
 
       const missing = [];
       const insufficient = [];
@@ -293,13 +311,18 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
         if (!f) {
           missing.push(pr.idx);
         } else if (typeof f.stock === "number" && f.stock < pr.qty) {
-          insufficient.push({ index: pr.idx, productId: pr.productId, available: f.stock, requested: pr.qty });
+          insufficient.push({
+            index: pr.idx,
+            productId: pr.productId,
+            available: f.stock,
+            requested: pr.qty,
+          });
         }
       }
 
       if (missing.length > 0 || insufficient.length > 0) {
-        if (appointmentIds.length > 0) await Appointment.deleteMany({ _id: { $in: appointmentIds } }).catch(()=>{});
-        await BillComplete.findByIdAndDelete(createdBill._id).catch(()=>{});
+        await Appointment.deleteMany({ _id: { $in: appointmentIds } }).catch(() => {});
+        await BillComplete.findByIdAndDelete(createdBill._id).catch(() => {});
         return res.status(400).json({
           success: false,
           message: "Product validation failed (missing or insufficient stock).",
@@ -308,66 +331,51 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
         });
       }
 
-      // --- Build ProductSold docs ---
- const productSoldDocs = products.map((p) => {
-  const staffIdVal = (p.staffId && p.staffId._id) ? p.staffId._id : (p.staffId || req.user._id);
-  const price = Number(p.price ?? p.unitPrice ?? 0);
-  const qty = Number(p.quantity ?? 1);
-  const total = Number((price * qty).toFixed(2));
+      // --- Build ProductSold docs and decrement batches ---
+      const productSoldDocs = [];
+      for (const p of products) {
+        const staffIdVal =
+          p.staffId && p.staffId._id ? p.staffId._id : p.staffId || req.user._id;
+        const price = Number(p.price ?? p.unitPrice ?? 0);
+        const qty = Number(p.quantity ?? 1);
+        const total = Number((price * qty).toFixed(2));
 
-  return {
-    productId: p.productId,
-    businessId,
-    billId: createdBill._id,
-    clientId,
-    clientName: clientName || embeddedAppointments[0]?.clientName || "Unknown Client", // ✅ add clientName
-    name: p.name || p.title || "Product",
-    price,
-    quantity: qty,
-    total,
-    description: p.description || "",
-    soldAt: p.soldAt ? new Date(p.soldAt) : new Date(),
-    staffId: staffIdVal,
-    paymentMethod: p.paymentMethod || paymentMethod || undefined,
-  };
-});
+        // ✅ decrement batches & record which were consumed
+        const consumedBatches = await decrementBatches(p.productId, qty);
+
+        productSoldDocs.push({
+          productId: p.productId,
+          businessId,
+          billId: createdBill._id,
+          clientId,
+          clientName: clientName || embeddedAppointments[0]?.clientName || "Unknown Client",
+          name: p.name || p.title || "Product",
+          price,
+          quantity: qty,
+          total,
+          description: p.description || "",
+          soldAt: p.soldAt ? new Date(p.soldAt) : new Date(),
+          staffId: staffIdVal,
+          paymentMethod: p.paymentMethod || paymentMethod,
+          consumedBatches, // ✅ store batch usage
+        });
+      }
+
       createdProductsSold = await ProductSold.insertMany(productSoldDocs, { ordered: true });
-
-      // reduce stock
-      const bulkOps = createdProductsSold.map((ps) => ({
-        updateOne: {
-          filter: { _id: ps.productId, businessId },
-          update: { $inc: { stock: -Number(ps.quantity || 0) } },
-        },
-      }));
-      if (bulkOps.length > 0) await Product.bulkWrite(bulkOps);
     }
 
-    // SUCCESS
+    // --- SUCCESS ---
     return res.status(201).json({
       success: true,
-      message: "Appointments, bill and productSold records created successfully.",
+      message: "Appointments, bill, and productSold records created successfully.",
       bill: createdBill,
       appointments: updatedAppointments,
       productsSold: createdProductsSold,
     });
   } catch (err) {
     console.error("Error creating appointments / bill / products:", err);
-
-    try {
-      if (typeof createdBill !== "undefined" && createdBill && createdBill._id) {
-        await BillComplete.findByIdAndDelete(createdBill._id).catch(()=>{});
-      }
-    } catch (cleanupErr) {
-      console.error("Cleanup failed:", cleanupErr);
-    }
-
-    if (err && err.name === "ValidationError") {
-      const details = {};
-      for (const key in err.errors) {
-        details[key] = err.errors[key].message;
-      }
-      return res.status(400).json({ success: false, message: "Validation error", details });
+    if (err && err.message && err.message.includes("Insufficient stock")) {
+      return res.status(400).json({ success: false, message: err.message });
     }
 
     return res.status(500).json({
@@ -377,8 +385,6 @@ const embeddedProducts = (Array.isArray(products) ? products : []).map((p) => ({
     });
   }
 });
-
-
 
 
 
@@ -399,44 +405,30 @@ router.get("/data", checkoutMiddleware, async (req, res) => {
     const skip = (page - 1) * limit;
 
     // ---------------- Appointment Query ----------------
-    let appointmentQuery = { businessId };
+    let appointmentQuery = { businessId, status: "booked" }; // only booked
 
     if (req.query.staffId) {
       appointmentQuery.staffId = req.query.staffId;
     }
 
-    // ---------------- ProductSold Query ----------------
+    // ---------------- ProductSold Query (unchanged) ----------------
     let productQuery = { businessId };
     if (req.query.staffId) {
       productQuery.staffId = req.query.staffId;
     }
 
-    // ---------------- Date Filter ----------------
-    if (req.query.date) {
-      const dateStr = req.query.date;
+    // ---------------- Date Filter: Last month till end of today ----------------
+    const now = new Date();
 
-      if (dateStr.length === 7) {
-        // YYYY-MM → filter whole month
-        const [year, month] = dateStr.split("-").map(Number);
-        const startOfMonth = new Date(year, month - 1, 1);
-        const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+    // Start of last month (1st day, 00:00:00)
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
 
-        appointmentQuery.start = { $gte: startOfMonth, $lte: endOfMonth };
-        productQuery.soldAt = { $gte: startOfMonth, $lte: endOfMonth };
-      } else {
-        // full date → filter that day
-        const dateParam = new Date(dateStr);
-        if (!isNaN(dateParam)) {
-          const startOfDay = new Date(dateParam);
-          startOfDay.setHours(0, 0, 0, 0);
-          const endOfDay = new Date(dateParam);
-          endOfDay.setHours(23, 59, 59, 999);
+    // End of today (23:59:59.999)
+    const endOfToday = new Date(now);
+    endOfToday.setHours(23, 59, 59, 999);
 
-          appointmentQuery.start = { $gte: startOfDay, $lte: endOfDay };
-          productQuery.soldAt = { $gte: startOfDay, $lte: endOfDay };
-        }
-      }
-    }
+    appointmentQuery.start = { $gte: startOfLastMonth, $lte: endOfToday };
+    productQuery.soldAt = { $gte: startOfLastMonth, $lte: endOfToday };
 
     // ---------------- Fetch both ----------------
     const [totalAppointments, appointments, totalProducts, productsSold] = await Promise.all([
