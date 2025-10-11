@@ -310,7 +310,6 @@ router.post("/staff", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 router.post('/clientele', authMiddleware, async (req, res) => {
   try {
     const { clientIds = [], fromDate, toDate, staffIds = [] } = req.body;
@@ -334,35 +333,43 @@ router.post('/clientele', authMiddleware, async (req, res) => {
     start = new Date(start.setHours(0, 0, 0, 0));
     end = new Date(end.setHours(23, 59, 59, 999));
 
+    // Prepare query
     const query = {
       businessId,
       'appointments.start': { $gte: start, $lte: end },
     };
 
+    // Validate clientIds, but do NOT filter them in query directly
+    let validClientIds = [];
     if (Array.isArray(clientIds) && clientIds.length > 0) {
       const invalid = clientIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
       if (invalid.length > 0) {
         return res.status(400).json({ error: 'Invalid clientIds', invalid });
       }
-      query.clientId = { $in: clientIds.map(id => new mongoose.Types.ObjectId(id)) };
+      validClientIds = clientIds.map(id => String(id)); // We'll use this for filtering in memory
     }
 
-    console.log('MongoDB query:', query);
+    console.log('📋 MongoDB query:', JSON.stringify(query));
 
     const bills = await Bill.find(query).lean();
-    console.log(`Found ${bills.length} bills matching filter.`);
+    console.log(`📦 Retrieved ${bills.length} bills`);
 
+    // Collect unique clientIds from appointments
     const clientSet = new Set();
     bills.forEach(bill => {
-      if (bill.clientId) clientSet.add(String(bill.clientId));
       (bill.appointments || []).forEach(app => {
         if (app.clientId) clientSet.add(String(app.clientId));
       });
     });
-    const clientIdsToProcess =
-      Array.isArray(clientIds) && clientIds.length > 0 ? clientIds : Array.from(clientSet);
 
-    const validStaffIds = staffIds
+    const clientIdsToProcess =
+      validClientIds.length > 0
+        ? validClientIds
+        : Array.from(clientSet);
+
+    console.log(`👥 Clients to process: ${clientIdsToProcess.length}`);
+
+    const validStaffIds = (Array.isArray(staffIds) ? staffIds : [])
       .filter(id => mongoose.Types.ObjectId.isValid(id))
       .map(id => String(id));
 
@@ -385,10 +392,10 @@ router.post('/clientele', authMiddleware, async (req, res) => {
       );
       if (!dataForBusiness) continue;
 
-      // --- find most recent appointment in bills (within date range) ---
+      // Find the most recent appointment for this client in the filtered bills
       let mostRecentAppt = null;
-      for (const b of bills) {
-        (b.appointments || []).forEach(app => {
+      for (const bill of bills) {
+        (bill.appointments || []).forEach(app => {
           if (String(app.clientId) === String(cid)) {
             const startDate = app.start ? new Date(app.start) : null;
             if (startDate && (!mostRecentAppt || startDate > new Date(mostRecentAppt.start))) {
@@ -398,12 +405,16 @@ router.post('/clientele', authMiddleware, async (req, res) => {
         });
       }
 
-      if (!mostRecentAppt) continue;
+      if (!mostRecentAppt) {
+        console.log(`ℹ️ Skipping client ${cid} - no appointment found`);
+        continue;
+      }
 
-      // --- 🔥 Only include clients whose most recent provider matches selected staff ---
+      // Filter by selected staffIds if provided
       if (validStaffIds.length > 0) {
         if (!validStaffIds.includes(String(mostRecentAppt.staffId))) {
-          continue; // skip this client
+          console.log(`ℹ️ Skipping client ${cid} - staffId does not match filter`);
+          continue;
         }
       }
 
@@ -413,9 +424,9 @@ router.post('/clientele', authMiddleware, async (req, res) => {
           const staffDoc = await Staff.findById(mostRecentAppt.staffId)
             .select('name')
             .lean();
-          providerName = staffDoc ? staffDoc.name : null;
+          providerName = staffDoc?.name || null;
         } catch (e) {
-          providerName = null;
+          console.error(`❌ Error fetching staff for ${mostRecentAppt.staffId}:`, e);
         }
       }
 
@@ -425,19 +436,19 @@ router.post('/clientele', authMiddleware, async (req, res) => {
         username: dataForBusiness.username || undefined,
         phone: dataForBusiness.phone || undefined,
         ...(dataForBusiness.address1 ||
-        dataForBusiness.address2 ||
-        dataForBusiness.city ||
-        dataForBusiness.province ||
-        dataForBusiness.postalCode
+          dataForBusiness.address2 ||
+          dataForBusiness.city ||
+          dataForBusiness.province ||
+          dataForBusiness.postalCode
           ? {
-              address: {
-                ...(dataForBusiness.address1 ? { address1: dataForBusiness.address1 } : {}),
-                ...(dataForBusiness.address2 ? { address2: dataForBusiness.address2 } : {}),
-                ...(dataForBusiness.city ? { city: dataForBusiness.city } : {}),
-                ...(dataForBusiness.province ? { province: dataForBusiness.province } : {}),
-                ...(dataForBusiness.postalCode ? { postalCode: dataForBusiness.postalCode } : {}),
-              },
-            }
+            address: {
+              ...(dataForBusiness.address1 ? { address1: dataForBusiness.address1 } : {}),
+              ...(dataForBusiness.address2 ? { address2: dataForBusiness.address2 } : {}),
+              ...(dataForBusiness.city ? { city: dataForBusiness.city } : {}),
+              ...(dataForBusiness.province ? { province: dataForBusiness.province } : {}),
+              ...(dataForBusiness.postalCode ? { postalCode: dataForBusiness.postalCode } : {}),
+            },
+          }
           : {}),
         ...(mostRecentAppt.start
           ? { mostRecentAppointment: { date: new Date(mostRecentAppt.start).toISOString() } }
@@ -448,16 +459,17 @@ router.post('/clientele', authMiddleware, async (req, res) => {
       };
 
       clientsDetailed.push(enriched);
+      console.log(`✅ Processed client ${cid}`);
     }
 
+    console.log(`📤 Returning ${clientsDetailed.length} clients`);
     return res.json({ clientsDetailed });
+
   } catch (err) {
     console.error('❌ Error in /clientele route:', err);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
-
-
 
 module.exports = router;
 
